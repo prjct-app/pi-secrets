@@ -5,7 +5,6 @@
  */
 const SHAPES: readonly { readonly label: string; readonly name: string; readonly pattern: RegExp }[] = [
   { label: 'Anthropic key', name: 'ANTHROPIC_API_KEY', pattern: /sk-ant-[A-Za-z0-9_-]{20,}/ },
-  { label: 'OpenRouter key', name: 'OPENROUTER_API_KEY', pattern: /sk-or-v1-[A-Za-z0-9]{32,}/ },
   { label: 'Stripe secret key', name: 'STRIPE_SECRET_KEY', pattern: /(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}/ },
   { label: 'OpenAI key', name: 'OPENAI_API_KEY', pattern: /sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{32,}/ },
   { label: 'GitHub token', name: 'GITHUB_TOKEN', pattern: /(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,})/ },
