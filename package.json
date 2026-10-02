@@ -1,6 +1,6 @@
 {
   "name": "@prjct.app/pi-secrets",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Give Pi agents your API keys without putting them in the conversation: stored in the OS keychain, injected into shell commands by name, redacted everywhere else.",
   "type": "module",
   "keywords": [
@@ -19,7 +19,8 @@
   "pi": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/prjct-app/pi-secrets/main/docs/cover.png"
   },
   "scripts": {
     "build": "rm -rf build && mkdir -p build && npm pack --ignore-scripts --pack-destination build >/dev/null && tar -xzf build/*.tgz -C build --strip-components=1 && rm -f build/*.tgz",
@@ -40,7 +41,7 @@
   },
   "dependencies": {
     "@napi-rs/keyring": "1.3.0",
-    "@prjct.app/pi-tui-kit": "file:../pi-tui-kit"
+    "@prjct.app/pi-tui-kit": "^0.3.1"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.85.1",
@@ -74,6 +75,7 @@
     "src",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "docs/cover.png"
   ]
 }

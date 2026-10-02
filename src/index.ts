@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createLocalBashOperations, isToolCallEventType } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { brand, completer, openPanel, openSecretPrompt, panelText, type CommandOption } from '@prjct.app/pi-tui-kit';
+import { brand, completer, openPanel, openSecretPrompt, panelText, type CommandOption, repairToolArgs } from '@prjct.app/pi-tui-kit';
 import { sight } from './detect.ts';
 import { discard, envFile, privateDir, sweep } from './inject.ts';
 import { NAME_RULE, mentions, tail, toName, validName, valueProblem } from './names.ts';
@@ -49,6 +49,7 @@ const HELP = [
 ].join('\n');
 
 export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions = {}): void {
+  repairToolArgs(pi);
   const vault = createVault({ root: options.root, keys: options.keys, now: options.now });
   const cell = {
     value: {
