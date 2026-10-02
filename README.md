@@ -1,5 +1,7 @@
 # pi-secrets
 
+[![pi-secrets — for PI Agent](https://raw.githubusercontent.com/prjct-app/pi-secrets/main/docs/cover.png)](https://pi.dev)
+
 Give Pi agents your API keys without putting them in the conversation.
 
 A key is typed once into a masked prompt and goes straight to the OS keychain. Agents only ever know its name: a bash command that mentions `STRIPE_SECRET_KEY` runs with `$STRIPE_SECRET_KEY` set, and anything that prints the value shows `[secret:STRIPE_SECRET_KEY]` instead. The value never reaches the model, the session file, or the transcript, so using a key with an agent is no reason to rotate it.
