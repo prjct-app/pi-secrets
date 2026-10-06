@@ -3,7 +3,7 @@ export const NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 export const NAME_RULE = 'Use an environment variable name: A–Z, digits and underscores, starting with a letter, at most 64 characters.';
 
 /** Shorter values would redact ordinary words from every output. */
-export const MIN_VALUE = 8;
+export const MIN_VALUE = 4;
 export const MAX_VALUE = 16_384;
 
 export const validName = (name: string): boolean => NAME_PATTERN.test(name);

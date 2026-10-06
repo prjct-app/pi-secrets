@@ -1,4 +1,5 @@
 import { StringDecoder } from 'node:string_decoder';
+import { MIN_VALUE } from './names.ts';
 
 /** A secret the process knows the value of. Never leaves this module in any output. */
 export type Known = { readonly name: string; readonly value: string };
@@ -12,6 +13,8 @@ export type Redactor = {
   readonly found: (input: string) => readonly string[];
   /** Longest form of any value, for holding back the tail of a stream. */
   readonly longest: number;
+  /** Moves a stream boundary before any known form that crosses it. */
+  readonly safeCut: (input: string, limit: number) => number;
 };
 
 export const marker = (name: string): string => `[secret:${name}]`;
@@ -33,11 +36,8 @@ export function forms(value: string): readonly string[] {
     unpadded,
     unpadded.replaceAll('+', '-').replaceAll('/', '_'),
   ];
-  return [...new Set(candidates)].filter(form => form.length >= MIN_FORM);
+  return [...new Set(candidates)].filter(form => form.length >= MIN_VALUE);
 }
-
-/** Shorter fragments would match ordinary text; values are refused below MIN_VALUE long, so no real form is this short. */
-const MIN_FORM = 8;
 
 const escape = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -52,7 +52,12 @@ export function createRedactor(known: readonly Known[]): Redactor {
   const deep = <T>(input: T): T => (pattern ? walk(input, text) as T : input);
   const found = (input: string): readonly string[] =>
     pattern ? [...new Set([...input.matchAll(pattern)].map(match => byForm.get(match[0]) ?? 'unknown'))] : [];
-  return { text, deep, found, longest: pairs[0]?.form.length ?? 0 };
+  const safeCut = (input: string, limit: number): number => {
+    const crossing = pattern ? [...input.matchAll(pattern)]
+      .find(match => match.index < limit && match.index + match[0].length > limit) : undefined;
+    return crossing?.index ?? limit;
+  };
+  return { text, deep, found, longest: pairs[0]?.form.length ?? 0, safeCut };
 }
 
 function walk(value: unknown, text: (input: string) => string): unknown {
@@ -75,10 +80,10 @@ export function createStreamRedactor(redactor: Redactor, emit: (chunk: Buffer) =
   const pending = { text: '' };
   const hold = Math.max(0, redactor.longest - 1);
   const release = (final: boolean): void => {
-    const clean = redactor.text(pending.text);
-    const cut = final ? clean.length : Math.max(0, clean.length - hold);
-    const ready = clean.slice(0, cut);
-    pending.text = clean.slice(cut);
+    const limit = final ? pending.text.length : Math.max(0, pending.text.length - hold);
+    const cut = redactor.safeCut(pending.text, limit);
+    const ready = redactor.text(pending.text.slice(0, cut));
+    pending.text = pending.text.slice(cut);
     if (ready) emit(Buffer.from(ready, 'utf8'));
   };
   return {
