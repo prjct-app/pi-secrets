@@ -97,3 +97,7 @@ const result = await runtime.completeSimple(model, context, options);
 ```
 
 This background helper masks detected PII and known keychain values without sending anything to a classifier. It throws if an indexed credential cannot be read, so the caller must not retry with the unprotected data.
+
+Background SDK guards reuse one in-memory keychain snapshot until the vault index changes. A denied read stays blocked instead of prompting on every request; use `/secret` to explicitly retry. No credential cache is written to disk.
+
+Tests run with temporary Pi and prjct directories. Importing the native keychain in the test process fails immediately; credential fixtures use an in-memory `KeyStore`.

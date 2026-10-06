@@ -9,7 +9,7 @@ import { NAME_RULE, mentions, tail, toName, validName, valueProblem } from './na
 import { secretPanelSpec, scopeText, type SecretIntent } from './panel.ts';
 import { createRedactor, createStreamRedactor, marker, type Known, type Redactor } from './redact.ts';
 import { createVault, inScope, projectOf, type Entry, type KeyStore, type Scope } from './vault.ts';
-import { createPrivacyGuard, maskSensitiveData } from './privacy.ts';
+import { createPrivacyGuard, maskSensitiveData, resetOutboundProtection } from './privacy.ts';
 
 export type InstallSecretsOptions = {
   /** Index folder; defaults to ${PRJCT_HOME:-~/.prjct}/pi-secrets. */
@@ -91,7 +91,7 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
   /** Loads every stored value once per index change, so any of them can be hidden in any output. */
   const refresh = (force = false): Promise<void> => queue(async () => {
     const stamp = vault.stamp();
-    if (!force && !availability.blocked && stamp === store.get().stamp) return;
+    if (!force && stamp === store.get().stamp) return;
     availability.blocked = false;
     const loaded = await Promise.all(vault.list().map(async entry => {
       try { return [entry.name, await vault.value(entry.name)] as const; } catch { availability.blocked = true; return [entry.name, undefined] as const; }
@@ -408,6 +408,10 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
     handler: async (args, ctx) => {
       const [verb = '', name = '', ...rest] = args.trim().split(/\s+/).filter(Boolean);
       try {
+        if (['', 'list', 'set'].includes(verb)) resetOutboundProtection();
+        if (availability.blocked && ['', 'list', 'set'].includes(verb)) {
+          await refresh(true);
+        }
         if (!verb) {
           if (ctx.mode === 'tui' && ctx.hasUI) await manage(ctx);
           else { await refresh(); output(ctx, listText(ctx)); }
