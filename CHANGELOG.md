@@ -1,3 +1,10 @@
+## 0.2.1 (2026-10-06)
+
+- Share background keychain reads per vault revision, including denied reads; stop retrying blocked reads on every hook.
+- Keep outbound protection closed on a keychain failure and allow an explicit `/secret` retry.
+- Scan long source-code tokens in linear time without losing adjacent PII detection.
+- Isolate SDK tests from personal credentials and prohibit native keychain access.
+
 ## 0.2.0 (2026-10-06)
 
 - Add local outbound privacy detection with explicit send, obfuscate and cancel choices.

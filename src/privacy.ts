@@ -10,7 +10,8 @@ export type PrivacyContext = Readonly<{
   notify: (message: string) => void;
 }>;
 
-const EMAIL = /[a-zA-Z0-9.!#$%&'+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)+/g;
+// A left boundary avoids retrying every suffix of a long source-code token.
+const EMAIL = /(?<![a-zA-Z0-9.!#$%&'+/=?^_`{|}~-])[a-zA-Z0-9.!#$%&'+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)+/g;
 const maskEmail = (value: string): string => `${value[0]}**********@****.${value.slice(value.lastIndexOf('.') + 1)}`;
 const luhn = (value: string): boolean => {
   const digits = value.replace(/\D/g, '');
@@ -53,14 +54,33 @@ export function mapText<T>(value: T, transform: (text: string) => string): T {
 export const maskSensitiveData = <T>(value: T): T => mapText(value, text =>
   findSensitive(text).reduce((result, item) => result.replaceAll(item.value, item.masked), text));
 
-/** Background SDK calls have no confirmation UI: redact known keys and detected PII. */
-export async function protectOutboundData<T>(value: T, options: Parameters<typeof import('./vault.ts').createVault>[0] = {}): Promise<T> {
-  const { createVault } = await import('./vault.ts');
+type VaultOptions = Parameters<typeof import('./vault.ts').createVault>[0];
+type Redactor = ReturnType<typeof import('./redact.ts').createRedactor>;
+type CachedRedactor = { revision: string; pending: Promise<Redactor> };
+const defaultRedactors = new Map<string, CachedRedactor>();
+const injectedRedactors = new WeakMap<object, Map<string, CachedRedactor>>();
+
+/** Explicit user-initiated retry; failed background reads never retry themselves. */
+export function resetOutboundProtection(): void { defaultRedactors.clear(); }
+
+/** Background SDK calls share one keychain read per index revision, including failures. */
+export async function protectOutboundData<T>(value: T, options: VaultOptions = {}): Promise<T> {
+  const { createVault, defaultRoot } = await import('./vault.ts');
   const { createRedactor } = await import('./redact.ts');
   const vault = createVault(options);
-  // An inaccessible keychain fails this call rather than silently dropping protection.
-  const known = await Promise.all(vault.list().map(async entry => ({ name: entry.name, value: await vault.value(entry.name) })));
-  const redactor = createRedactor(known.filter((item): item is { name: string; value: string } => typeof item.value === 'string'));
+  const root = options.root ?? defaultRoot();
+  const entries = vault.list();
+  const revision = JSON.stringify([vault.stamp(), entries]);
+  const cache = options.keys ? injectedRedactors.get(options.keys) ?? new Map<string, CachedRedactor>() : defaultRedactors;
+  if (options.keys) injectedRedactors.set(options.keys, cache);
+  const previous = cache.get(root);
+  const pending = previous?.revision === revision ? previous.pending : (async () => {
+    // Retain a rejected read too: declining one dialog must not cause one per hook.
+    const known = await Promise.all(entries.map(async entry => ({ name: entry.name, value: await vault.value(entry.name) })));
+    return createRedactor(known.filter((item): item is { name: string; value: string } => typeof item.value === 'string'));
+  })();
+  cache.set(root, { revision, pending });
+  const redactor = await pending;
   return maskSensitiveData(redactor.deep(value));
 }
 
