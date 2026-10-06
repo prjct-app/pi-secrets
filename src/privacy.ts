@@ -1,3 +1,5 @@
+import { mapText } from './protocol.ts';
+export { mapText } from './protocol.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import { sightings } from './detect.ts';
 
@@ -26,7 +28,7 @@ const luhn = (value: string): boolean => {
 export function findSensitive(text: string): readonly Finding[] {
   const credentials = sightings(text).map(item => ({ kind: item.label, value: item.value, masked: `[redacted:${item.name}]` }));
   const emails = [...text.matchAll(EMAIL)].map(match => ({ kind: 'email', value: match[0], masked: maskEmail(match[0]) }));
-  const cards = [...text.matchAll(/(?<!\d)(?=(\d{13,19}|\d{4}(?:[ -]\d{4}){3}|\d{4}[ -]\d{6}[ -]\d{5})(?!\d))/g)]
+  const cards = [...text.matchAll(/(?<![A-Za-z0-9_])(?=(\d{13,19}|\d{4}(?:[ -]\d{4}){3}|\d{4}[ -]\d{6}[ -]\d{5})(?![A-Za-z0-9_]))/g)]
     .map(match => match[1]!).filter(luhn)
     .map(value => ({ kind: 'payment card', value, masked: `************${value.replace(/\D/g, '').slice(-4)}` }));
   const withoutCards = cards.reduce((result, card) => result.replaceAll(card.value, '#'), text);
@@ -37,22 +39,15 @@ export function findSensitive(text: string): readonly Finding[] {
     .sort((a, b) => b.value.length - a.value.length);
 }
 
-/** Preserve provider protocol fields and opaque binary/signature data. No image OCR. */
-const OPAQUE = new Set(['signature', 'thoughtSignature', 'thinkingSignature', 'encrypted_content', 'mimeType', 'type', 'role', 'call_id', 'tool_call_id', 'model', 'provider', 'api']);
-export function mapText<T>(value: T, transform: (text: string) => string): T {
-  if (typeof value === 'string') return transform(value) as T;
-  if (Array.isArray(value)) return value.map(item => mapText(item, transform)) as T;
-  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
-    const record = value as Record<string, unknown>;
-    if (record.type === 'image' || record.type === 'image_url' || record.type === 'input_image') return value;
-    return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, OPAQUE.has(key) ? item : mapText(item, transform)])) as T;
-  }
-  return value;
-}
+const replaceFinding = (text: string, item: Finding): string => {
+  if (item.kind !== 'payment card') return text.replaceAll(item.value, item.masked);
+  const escaped = item.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`, 'g'), () => item.masked);
+};
 
 /** For background SDK consumers that cannot ask for consent. */
 export const maskSensitiveData = <T>(value: T): T => mapText(value, text =>
-  findSensitive(text).reduce((result, item) => result.replaceAll(item.value, item.masked), text));
+  findSensitive(text).reduce((result, item) => replaceFinding(result, item), text));
 
 type VaultOptions = Parameters<typeof import('./vault.ts').createVault>[0];
 type Redactor = ReturnType<typeof import('./redact.ts').createRedactor>;
@@ -103,7 +98,7 @@ export function createPrivacyGuard() {
       const changes = { value: false };
       const sanitized = mapText(value, text => [...found.values()].sort((a, b) => b.value.length - a.value.length).reduce((result, item) => {
         if (!cancelled && decisions.get(key(ctx.destination, item.value)) === 'send') return result;
-        const next = result.replaceAll(item.value, item.masked);
+        const next = replaceFinding(result, item);
         if (next !== result) changes.value = true;
         return next;
       }, text));

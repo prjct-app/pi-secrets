@@ -9,6 +9,7 @@ import { PRIVACY_CHOICES } from '../src/privacy.ts';
 
 test('real SDK HTTP boundary: mask, explicit send, input cancel, context cancel and RPC', async () => {
   const wire: string[] = [];
+  const protocol = { type: 'reasoning', id: 'rs_04f9f4111111111111111b535', encrypted_content: 'ciphertext-must-remain-exact' };
   const server = createServer(async (request, response) => {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -23,6 +24,7 @@ test('real SDK HTTP boundary: mask, explicit send, input cancel, context cancel 
   await writeFile(extension, `
 import { installSecrets } from ${JSON.stringify(resolve('src/index.ts'))};
 export default function(pi) {
+  pi.on('before_provider_request', event => ({ ...event.payload, audit_protocol: ${JSON.stringify(protocol)} }));
   installSecrets(pi, { root: ${JSON.stringify(join(base, 'vault'))}, keys: { get: async () => undefined, set: async () => {}, delete: async () => {} } });
   pi.registerProvider('privacy-fixture', { baseUrl: 'http://127.0.0.1:${address.port}/v1', apiKey: 'fixture-only', api: 'openai-completions',
     models: [{ id: 'offline', name: 'Offline privacy fixture', reasoning: false, input: ['text'], contextWindow: 32000, maxTokens: 64,
@@ -59,6 +61,7 @@ export default function(pi) {
         assert.deepEqual(errors, []);
         assert.equal(wire.length > 0, scenario.sent, JSON.stringify(scenario));
         if (scenario.sent) {
+          assert.deepEqual(JSON.parse(wire[0]!).audit_protocol, protocol);
           assert.equal(wire[0]!.includes('person@example.com'), scenario.original);
           if (!scenario.original) assert.ok(wire[0]!.includes('p**********@****.com'));
         }
