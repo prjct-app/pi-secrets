@@ -1,4 +1,18 @@
+## 0.2.0 (2026-10-06)
+
+- Add local outbound privacy detection with explicit send, obfuscate and cancel choices.
+- Protect SDK context and provider payloads; export a guard for direct background SDK calls.
+- Declining keychain storage no longer implicitly permits sending a credential.
+
 # Changelog
+
+## 0.1.2
+
+### Fixes
+
+* Accept secrets from four characters, including short PINs and six-digit OTPs.
+* Redact short values and encoded forms with the same minimum as the masked prompt.
+* Preserve complete secret forms across streamed output boundaries, including padded base64.
 
 ## 0.1.0 (unreleased)
 

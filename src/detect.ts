@@ -20,6 +20,12 @@ const SHAPES: readonly { readonly label: string; readonly name: string; readonly
 
 export type Sighting = { readonly label: string; readonly name: string; readonly value: string };
 
+/** All recognizable credentials, without heuristic entropy checks. */
+export function sightings(text: string): readonly Sighting[] {
+  return SHAPES.flatMap(shape => [...text.matchAll(new RegExp(shape.pattern.source, 'g'))]
+    .map(match => ({ label: shape.label, name: shape.name, value: match[0] })));
+}
+
 /** The first credential-shaped value in the text, if any. Earlier, more specific shapes win. */
 export function sight(text: string): Sighting | undefined {
   for (const shape of SHAPES) {

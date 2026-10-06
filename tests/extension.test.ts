@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomInt } from 'node:crypto';
 import { mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,6 +7,7 @@ import { test } from 'node:test';
 import { createBashTool, type ExtensionAPI, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { installSecrets } from '../src/index.ts';
 import { memoryKeys } from './keys.ts';
+import { PRIVACY_CHOICES } from '../src/privacy.ts';
 
 const VALUE = 'sk_test_51HxYzAbCdEfGhIjKlMnOp';
 type Handler = (event: any, ctx: any) => any;
@@ -20,8 +22,11 @@ function harness(ui: { value?: string; select?: string; confirm?: boolean; input
   const notices: string[] = [];
   const prompts: string[] = [];
   const editor: string[] = [];
+  const aborted = { count: 0 };
   const ctx = {
     cwd, mode: 'tui', hasUI: true,
+    model: { provider: 'offline', id: 'fixture', baseUrl: 'http://localhost' },
+    abort: () => { aborted.count++; },
     ui: {
       notify: (text: string) => notices.push(text),
       select: async (title: string) => { prompts.push(title); return ui.select; },
@@ -43,7 +48,7 @@ function harness(ui: { value?: string; select?: string; confirm?: boolean; input
     return results[0];
   };
   return {
-    base, cwd, keys, notices, prompts, editor, ctx, emit,
+    base, cwd, keys, notices, prompts, editor, ctx, emit, aborted,
     tool: (name: string, params: unknown) => tools.get(name)!.execute('call', params as never, undefined, undefined, ctx as never),
     command: (text: string) => commands.get('secret')!.handler(text, ctx),
     tools,
@@ -67,6 +72,33 @@ test('secret_request stores the typed value and answers with the name only', asy
     const again = await h.tool('secret_request', { name: 'STRIPE_KEY', reason: 'again' });
     assert.match(text(again as never), /is available/);
   } finally { h.cleanup(); }
+});
+
+test('short credentials are stored and hidden from results, messages and commands', async () => {
+  for (const length of [4, 6]) {
+    const value = String(randomInt(0, 1_000)).padStart(length, '0');
+    const h = harness({ value, select: 'Only this project' });
+    try {
+      const stored = await h.tool('secret_request', { name: 'OTP', reason: 'Verify a received code' });
+      assert.equal(h.keys.map.get('OTP'), value);
+      assert.ok(!JSON.stringify(stored).includes(value));
+      assert.ok(!JSON.stringify(await h.tool('secret_list', {})).includes(value));
+      const input = { command: 'printf "%s" "$OTP"' };
+      await h.emit('tool_call', { type: 'tool_call', toolName: 'bash', toolCallId: 'otp', input });
+      assert.ok(!input.command.includes(value));
+      const hidden: unknown = await h.emit('tool_result', {
+        type: 'tool_result', toolName: 'bash', toolCallId: 'otp', input,
+        content: [{ type: 'text', text: value }], details: undefined, isError: false,
+      });
+      assert.deepEqual(hidden, { content: [{ type: 'text', text: '[secret:OTP]' }], details: undefined });
+      const message: unknown = await h.emit('input', { type: 'input', text: value, source: 'interactive' });
+      assert.deepEqual(message, { action: 'transform', text: '[secret:OTP]', images: undefined });
+      const context: unknown = await h.emit('context', {
+        type: 'context', messages: [{ role: 'user', content: [{ type: 'text', text: value }] }],
+      });
+      assert.deepEqual(context, { messages: [{ role: 'user', content: [{ type: 'text', text: '[secret:OTP]' }] }] });
+    } finally { h.cleanup(); }
+  }
 });
 
 test('secret_request declined leaves nothing stored and tells the agent not to ask in chat', async () => {
@@ -148,12 +180,12 @@ test('a new credential pasted into the chat is offered to the keychain', async (
   } finally { h.cleanup(); }
 });
 
-test('declining the offer sends the message unchanged', async () => {
+test('declining storage is not consent to send a credential', async () => {
   const token = 'ghp_' + 'Ab1'.repeat(12);
   const h = harness({ confirm: false });
   try {
     const result = await h.emit('input', { type: 'input', text: `push with ${token}`, source: 'interactive' });
-    assert.equal(result.action, 'continue');
+    assert.equal(result.action, 'handled');
     assert.equal(h.keys.map.size, 0);
   } finally { h.cleanup(); }
 });
@@ -198,4 +230,91 @@ test('the panel shows names with the last six characters and nothing more', asyn
   const rendered = JSON.stringify([spec.items(), spec.detail(item!)]);
   assert.ok(!rendered.includes(VALUE.slice(0, -6)));
   assert.deepEqual(spec.actions!.filter(action => !action.when || action.when(item)).map(action => action.key), ['n', 'r', 'g', 'x']);
+});
+
+test('PII input offers masked previews and all three choices', async () => {
+  for (const choice of PRIVACY_CHOICES) {
+    const h = harness({ select: choice });
+    const email = 'person@example.com';
+    try {
+      const result = await h.emit('input', { type: 'input', text: `Contact ${email}`, source: 'interactive' });
+      assert.equal(result.action, choice === PRIVACY_CHOICES[0] ? 'transform' : choice === PRIVACY_CHOICES[1] ? 'continue' : 'handled');
+      if (choice === PRIVACY_CHOICES[0]) assert.equal(result.text, 'Contact p**********@****.com');
+      assert.ok(h.prompts.some(prompt => prompt.includes('p**********@****.com')));
+      assert.ok(!JSON.stringify(h.prompts).includes(email));
+    } finally { h.cleanup(); }
+  }
+});
+
+test('tool output, restored system context and provider payload require consent', async () => {
+  for (const event of ['context', 'context_with_system', 'before_provider_request']) {
+    const h = harness({ select: PRIVACY_CHOICES[0] });
+    try {
+      const messages = [{ role: 'toolResult', content: [{ type: 'text', text: 'person@example.com' }] }];
+      const result = await h.emit(event, event === 'before_provider_request' ? { payload: { messages } } : { messages });
+      assert.ok(!JSON.stringify(result).includes('person@example.com'));
+      assert.ok(JSON.stringify(result).includes('p**********@****.com'));
+    } finally { h.cleanup(); }
+  }
+});
+
+test('cancel during outbound context aborts and never returns the raw data', async () => {
+  const h = harness();
+  try {
+    const result = await h.emit('context', { messages: [{ role: 'user', content: 'person@example.com' }] });
+    assert.equal(h.aborted.count, 1);
+    assert.ok(!JSON.stringify(result).includes('person@example.com'));
+  } finally { h.cleanup(); }
+});
+
+test('consent persists only for the same destination and session', async () => {
+  const h = harness({ select: PRIVACY_CHOICES[1] });
+  const event = { messages: [{ role: 'user', content: 'person@example.com' }] };
+  try {
+    await h.emit('context', event);
+    await h.emit('context', event);
+    assert.equal(h.prompts.length, 1);
+    h.ctx.model.provider = 'different-provider';
+    await h.emit('context', event);
+    assert.equal(h.prompts.length, 2);
+    await h.emit('session_before_switch', {});
+    await h.emit('context', event);
+    assert.equal(h.prompts.length, 3);
+  } finally { h.cleanup(); }
+});
+
+test('headless and RPC requests obfuscate without a confirmation dialog', async () => {
+  const h = harness({ select: PRIVACY_CHOICES[1] });
+  try {
+    h.ctx.mode = 'rpc';
+    const result = await h.emit('input', { text: 'person@example.com', source: 'rpc' });
+    assert.equal(result.text, 'p**********@****.com');
+    assert.equal(h.prompts.length, 0);
+    assert.ok(h.notices.some(notice => notice.includes('Obfuscated')));
+  } finally { h.cleanup(); }
+});
+
+test('consent to PII never reveals stored credentials and notices contain no raw PII', async () => {
+  const ui = { value: VALUE, select: 'Every project' };
+  const h = harness(ui);
+  try {
+    await h.tool('secret_request', { name: 'STRIPE_KEY', reason: 'x' });
+    ui.select = PRIVACY_CHOICES[1];
+    const result = await h.emit('input', { text: `${VALUE} person@example.com`, source: 'interactive' });
+    assert.equal(result.text, '[secret:STRIPE_KEY] person@example.com');
+    assert.ok(!JSON.stringify([...h.prompts, ...h.notices]).includes('person@example.com'));
+    assert.ok(!JSON.stringify([...h.prompts, ...h.notices]).includes(VALUE));
+  } finally { h.cleanup(); }
+});
+
+test('a failed consent dialog cancels instead of failing open', async () => {
+  const h = harness();
+  try {
+    h.ctx.ui.select = async () => { throw new Error('UI disconnected'); };
+    const input = await h.emit('input', { text: 'person@example.com', source: 'interactive' });
+    assert.equal(input.action, 'handled');
+    const result = await h.emit('context', { messages: [{ role: 'user', content: 'person@example.com' }] });
+    assert.equal(h.aborted.count, 1);
+    assert.ok(!JSON.stringify(result).includes('person@example.com'));
+  } finally { h.cleanup(); }
 });

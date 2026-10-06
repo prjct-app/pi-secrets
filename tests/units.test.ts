@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { randomInt } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -50,7 +51,36 @@ test('names: mentions are whole words, the tail shows at most the last six', () 
   assert.equal(tail(VALUE), '••••KlMnOp');
   assert.equal(tail('abcdefgh'), '••••gh');
   assert.equal(toName('stripe live-key'), 'STRIPE_LIVE_KEY');
-  assert.match(valueProblem('short') ?? '', /at least 8/);
+  assert.match(valueProblem('abc') ?? '', /at least 4/);
+});
+
+test('short PINs and OTPs validate without weakening other value limits', () => {
+  for (const length of [4, 5, 6, 7, 8]) {
+    const value = String(randomInt(0, 1_000)).padStart(length, '0');
+    assert.equal(valueProblem(value), undefined);
+    assert.ok(!tail(value).includes(value));
+  }
+  for (const value of ['', 'a', 'ab', 'abc']) assert.match(valueProblem(value) ?? '', /at least 4/);
+  assert.match(valueProblem('x'.repeat(16_385)) ?? '', /at most/);
+  assert.match(valueProblem('abc\0') ?? '', /NUL/);
+});
+
+test('short PINs and OTPs stay hidden in every form, nested data and split streams', () => {
+  for (const length of [4, 5, 6, 7]) {
+    const value = String(randomInt(0, 1_000)).padStart(length, '0');
+    const redactor = createRedactor([{ name: 'OTP', value }]);
+    assert.ok(forms(value).includes(value));
+    for (const form of forms(value)) {
+      assert.equal(redactor.text(`before ${form} after`), 'before [secret:OTP] after');
+      assert.deepEqual(redactor.found(form), ['OTP']);
+      assert.deepEqual(redactor.deep({ content: [{ text: form }] }), { content: [{ text: '[secret:OTP]' }] });
+      const out: string[] = [];
+      const stream = createStreamRedactor(redactor, chunk => out.push(chunk.toString('utf8')));
+      for (const byte of Buffer.from(`before ${form} after`)) stream.write(Buffer.from([byte]));
+      stream.end();
+      assert.equal(out.join(''), 'before [secret:OTP] after');
+    }
+  }
 });
 
 test('pasted credentials are recognized by shape', () => {
