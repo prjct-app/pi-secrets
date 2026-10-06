@@ -1,3 +1,4 @@
+import { mapText } from './protocol.ts';
 import { StringDecoder } from 'node:string_decoder';
 import { MIN_VALUE } from './names.ts';
 
@@ -49,7 +50,7 @@ export function createRedactor(known: readonly Known[]): Redactor {
   const pattern = pairs.length ? new RegExp(pairs.map(pair => escape(pair.form)).join('|'), 'g') : undefined;
   const text = (input: string): string =>
     pattern && input ? input.replace(pattern, form => marker(byForm.get(form) ?? 'unknown')) : input;
-  const deep = <T>(input: T): T => (pattern ? walk(input, text) as T : input);
+  const deep = <T>(input: T): T => (pattern ? mapText(input, text) : input);
   const found = (input: string): readonly string[] =>
     pattern ? [...new Set([...input.matchAll(pattern)].map(match => byForm.get(match[0]) ?? 'unknown'))] : [];
   const safeCut = (input: string, limit: number): number => {
@@ -58,17 +59,6 @@ export function createRedactor(known: readonly Known[]): Redactor {
     return crossing?.index ?? limit;
   };
   return { text, deep, found, longest: pairs[0]?.form.length ?? 0, safeCut };
-}
-
-function walk(value: unknown, text: (input: string) => string): unknown {
-  if (typeof value === 'string') return text(value);
-  if (Array.isArray(value)) return value.map(item => walk(item, text));
-  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
-    // Image payloads are large base64 blobs; scanning them costs time and never finds a typed value.
-    if ((value as { type?: unknown }).type === 'image') return value;
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, walk(item, text)]));
-  }
-  return value;
 }
 
 /**
