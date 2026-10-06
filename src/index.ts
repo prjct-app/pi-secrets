@@ -9,6 +9,7 @@ import { NAME_RULE, mentions, tail, toName, validName, valueProblem } from './na
 import { secretPanelSpec, scopeText, type SecretIntent } from './panel.ts';
 import { createRedactor, createStreamRedactor, marker, type Known, type Redactor } from './redact.ts';
 import { createVault, inScope, projectOf, type Entry, type KeyStore, type Scope } from './vault.ts';
+import { createPrivacyGuard, maskSensitiveData } from './privacy.ts';
 
 export type InstallSecretsOptions = {
   /** Index folder; defaults to ${PRJCT_HOME:-~/.prjct}/pi-secrets. */
@@ -51,6 +52,27 @@ const HELP = [
 export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions = {}): void {
   repairToolArgs(pi);
   const vault = createVault({ root: options.root, keys: options.keys, now: options.now });
+  const privacy = createPrivacyGuard();
+  const availability = { blocked: false };
+  const protect = async <T>(value: T, ctx: ExtensionContext, interactive = ctx.hasUI && ctx.mode === 'tui') => {
+    if (availability.blocked) {
+      ctx.ui.notify('Sending blocked: unlock the keychain to restore secret protection.', 'error');
+      return { value: maskSensitiveData(value), cancelled: true, changed: true };
+    }
+    const origin = (() => { try { return new URL(ctx.model?.baseUrl ?? '').origin; } catch { return 'configured endpoint'; } })();
+    try { return await privacy.inspect(value, {
+    destination: ctx.model ? `${ctx.model.provider}/${ctx.model.id} (${origin})` : 'selected model',
+    interactive,
+    choose: (preview, choices) => ctx.ui.select(preview, [...choices], { signal: ctx.signal }),
+    notify: message => ctx.ui.notify(message, 'warning'),
+    }); } catch {
+      ctx.ui.notify('Sending cancelled: privacy confirmation could not be completed.', 'error');
+      return { value: maskSensitiveData(value), cancelled: true, changed: true };
+    }
+  };
+  pi.on('session_start', async () => { privacy.reset(); });
+  pi.on('session_before_switch', async () => { privacy.reset(); });
+  pi.on('session_shutdown', async () => { privacy.reset(); });
   const cell = {
     value: {
       stamp: -1, values: new Map(), retired: [], redactor: createRedactor([]), pending: new Map(), files: new Set(),
@@ -69,9 +91,10 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
   /** Loads every stored value once per index change, so any of them can be hidden in any output. */
   const refresh = (force = false): Promise<void> => queue(async () => {
     const stamp = vault.stamp();
-    if (!force && stamp === store.get().stamp) return;
+    if (!force && !availability.blocked && stamp === store.get().stamp) return;
+    availability.blocked = false;
     const loaded = await Promise.all(vault.list().map(async entry => {
-      try { return [entry.name, await vault.value(entry.name)] as const; } catch { return [entry.name, undefined] as const; }
+      try { return [entry.name, await vault.value(entry.name)] as const; } catch { availability.blocked = true; return [entry.name, undefined] as const; }
     }));
     const values = new Map(loaded.filter((pair): pair is readonly [string, string] => typeof pair[1] === 'string'));
     store.set(slot => {
@@ -230,10 +253,25 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
   });
 
   /** Last line: whatever reached the history some other way is hidden before each model call. */
-  pi.on('context', async event => {
+  pi.on('context', async (event, ctx) => {
     await refresh();
-    if (!store.get().values.size && !store.get().retired.length) return undefined;
-    return { messages: store.get().redactor.deep(event.messages) };
+    const result = await protect(store.get().redactor.deep(event.messages), ctx);
+    if (result.cancelled) { ctx.abort(); ctx.ui.notify('Sending cancelled / Envío cancelado.', 'info'); }
+    return { messages: result.value };
+  });
+  // Includes system instructions restored by Pi after ordinary context handlers.
+  pi.on('context_with_system', async (event, ctx) => {
+    await refresh();
+    const result = await protect(store.get().redactor.deep(event.messages), ctx);
+    if (result.cancelled) ctx.abort();
+    return { messages: result.value };
+  });
+  // Final SDK boundary: also covers data introduced by another extension/provider.
+  pi.on('before_provider_request', async (event, ctx) => {
+    await refresh();
+    const result = await protect(store.get().redactor.deep(event.payload), ctx);
+    if (result.cancelled) ctx.abort();
+    return result.value;
   });
 
   // ── The person's own ! commands get the same values and the same redaction ──
@@ -265,11 +303,19 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
     const redactor = store.get().redactor;
     const hidden = redactor.found(event.text);
     const text = redactor.text(event.text);
+    const finish = async (candidate: string) => {
+      const result = await protect(candidate, ctx, event.source === 'interactive' && ctx.hasUI && ctx.mode === 'tui');
+      if (result.cancelled) {
+        ctx.ui.notify('Sending cancelled / Envío cancelado.', 'info');
+        return { action: 'handled' as const };
+      }
+      return result.value !== event.text ? { action: 'transform' as const, text: result.value, images: event.images } : { action: 'continue' as const };
+    };
     if (hidden.length) ctx.ui.notify(`Hid the value of ${hidden.join(', ')} from your message; the agent sees ${hidden.map(marker).join(', ')}.`, 'info');
     const seen = event.source === 'interactive' && ctx.hasUI ? sight(text) : undefined;
-    if (!seen) return hidden.length ? { action: 'transform' as const, text, images: event.images } : { action: 'continue' as const };
+    if (!seen) return finish(text);
     const keep = await ctx.ui.confirm(`That looks like a ${seen.label}`, `Store it in the OS keychain instead of sending it? The agent will get only its name.`);
-    if (!keep) return hidden.length ? { action: 'transform' as const, text, images: event.images } : { action: 'continue' as const };
+    if (!keep) return finish(text);
     const suggested = freeName(seen.name);
     const typed = (await ctx.ui.input('Name for this secret', suggested))?.trim();
     const name = typed ? toName(typed) : suggested;
@@ -287,7 +333,7 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
     }
     await put(name, seen.value, scope);
     ctx.ui.notify(`${name} stored in the OS keychain. Your message now says ${marker(name)}.`, 'info');
-    return { action: 'transform' as const, text: text.replaceAll(seen.value, marker(name)), images: event.images };
+    return finish(text.replaceAll(seen.value, marker(name)));
   });
 
   const freeName = (base: string): string => {

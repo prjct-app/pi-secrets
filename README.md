@@ -4,11 +4,11 @@
 
 Give Pi agents your API keys without putting them in the conversation.
 
-A key is typed once into a masked prompt and goes straight to the OS keychain. Agents only ever know its name: a bash command that mentions `STRIPE_SECRET_KEY` runs with `$STRIPE_SECRET_KEY` set, and anything that prints the value shows `[secret:STRIPE_SECRET_KEY]` instead. The value never reaches the model, the session file, or the transcript, so using a key with an agent is no reason to rotate it.
+A key is typed once into a masked prompt and goes straight to the OS keychain. Agents only ever know its name: a bash command that mentions `STRIPE_SECRET_KEY` runs with `$STRIPE_SECRET_KEY` set, and anything that prints the value shows `[secret:STRIPE_SECRET_KEY]` instead. Stored values are redacted from the model context, tool results and transcript. This is a local guardrail, not a sandbox for arbitrary code or network traffic.
 
 ## Install
 
-Requires Pi **0.85.1** and Node.js **22.19+**.
+Requires Pi **1.0.3** and Node.js **22.19+**.
 
 ```sh
 pi install npm:@prjct.app/pi-secrets
@@ -49,7 +49,7 @@ Every Pi on the machine reads the same keychain, so teammates in [pi-team](https
 | `/secret remove NAME` | Delete a secret after a confirmation. |
 | `/secret list` | Names, last six characters and scope. |
 
-Names are environment variable names: `A–Z`, digits and `_`, starting with a letter. `PATH`, `HOME` and similar shell names, and anything starting with `PI_`, are refused. Values need at least 8 characters, so hiding them never blanks out ordinary words.
+Names are environment variable names: `A–Z`, digits and `_`, starting with a letter. `PATH`, `HOME` and similar shell names, and anything starting with `PI_`, are refused. Values need at least 4 characters, including short PINs and six-digit OTPs. Short values can also hide matching ordinary text in outputs.
 
 ## What keeps the value out
 
@@ -71,3 +71,29 @@ npm run build:pi
 ```
 
 Tests use an in-memory key store and never touch the real keychain.
+
+## Outbound privacy guard
+
+Before sending text to the selected model, pi-secrets detects email addresses, international phone numbers, Luhn-valid payment-card numbers in common formats, and the credential formats listed above. Detection runs locally. No classifier service receives the data.
+
+The terminal shows a masked preview such as `p**********@****.com` and three choices:
+
+- **Obfuscate / Ofuscar** sends the masked text.
+- **Send original / Enviar original** explicitly permits these detected values for this model and endpoint in this session.
+- **Cancel / Cancelar**, including dismissing the dialog, stops the request.
+
+Decisions are held as salted hashes in process memory and reset when the session changes. Stored keychain secrets are always redacted, even after authorizing PII. Declining an offer to store an unknown credential opens the privacy decision; it no longer implies permission to send it. Explicitly sending an unstored credential may expose it to both the model and session history.
+
+Coverage includes interactive input, outbound history and tool text, restored system instructions, and the SDK `before_provider_request` payload. Print/RPC/background sessions cannot obtain interactive consent, so newly detected data is masked automatically and a notice is emitted. A failed confirmation or inaccessible keychain cancels sending. Privacy notices never include the original detected value.
+
+Masking outbound context does not erase source files, previous session entries or tool output on disk. Images, binary attachments, encrypted reasoning, arbitrary encodings, names and addresses without recognizable patterns are outside this detector. Models and extensions can reconstruct information from surrounding context; masking is not anonymization. Other extensions must respect the SDK payload hook; independent HTTP calls cannot be intercepted by a Pi extension.
+
+For extensions making direct public SDK calls outside a session, declare `@prjct.app/pi-secrets` in `dependencies` and use the exported guard before the call:
+
+```ts
+import { protectOutboundData } from '@prjct.app/pi-secrets/privacy';
+const context = await protectOutboundData(originalContext);
+const result = await runtime.completeSimple(model, context, options);
+```
+
+This background helper masks detected PII and known keychain values without sending anything to a classifier. It throws if an indexed credential cannot be read, so the caller must not retry with the unprotected data.
