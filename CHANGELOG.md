@@ -1,3 +1,9 @@
+## 0.2.2
+
+- Preserve provider item IDs, signed thinking and encrypted reasoning byte for byte in both secret and PII guards.
+- Do not classify or replace digit runs inside protocol identifiers as payment cards.
+- Regression coverage reproduces the encrypted item ID corruption while confirming real PII and stored secrets stay masked.
+
 ## 0.2.1 (2026-10-06)
 
 - Share background keychain reads per vault revision, including denied reads; stop retrying blocked reads on every hook.
