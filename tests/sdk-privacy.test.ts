@@ -33,6 +33,9 @@ export default function(pi) {
 }`);
   try {
     for (const scenario of [
+      { choice: undefined, prompt: 'person@example.com', sent: true, original: false, mode: 'tui', default: true },
+      { choice: undefined, prompt: 'context fixture', sent: true, original: false, mode: 'tui', default: true },
+      { choice: undefined, prompt: 'person@example.com', sent: true, original: false, mode: 'rpc', default: true },
       { choice: PRIVACY_CHOICES[0], prompt: 'person@example.com', sent: true, original: false, mode: 'tui' },
       { choice: PRIVACY_CHOICES[1], prompt: 'person@example.com', sent: true, original: true, mode: 'tui' },
       { choice: PRIVACY_CHOICES[3], prompt: 'person@example.com', sent: true, original: false, mode: 'tui' },
@@ -43,6 +46,7 @@ export default function(pi) {
       { choice: undefined, prompt: 'person@example.com', sent: true, original: false, mode: 'tui', persistent: true },
     ] as const) {
       wire.length = 0;
+      await rm(join(base, 'vault', 'privacy.json'), { force: true });
       const settings = SettingsManager.inMemory({ packages: [], extensions: ['-builtin:mcp'], compaction: { enabled: false }, cacheWarming: 'off' });
       const loader = new DefaultResourceLoader({ cwd: base, agentDir: base, settingsManager: settings, noContextFiles: true, noSkills: true, noThemes: true, noPromptTemplates: true, additionalExtensionPaths: [extension] });
       await loader.reload();
@@ -52,16 +56,20 @@ export default function(pi) {
       const errors: unknown[] = [];
       const recordError = (error: unknown): void => { errors.push(error); };
       const prompts: string[] = [];
+      const notices: { message: string; type: string }[] = [];
       try {
         await session.bindExtensions({ mode: scenario.mode, onError: recordError, uiContext: {
           select: async (title: string) => { prompts.push(title); return scenario.choice; }, confirm: async () => false,
-          notify() {}, setStatus() {}, setWidget() {}, setWorkingMessage() {},
+          notify: (message: string, type: string) => notices.push({ message, type }), setStatus() {}, setWidget() {}, setWorkingMessage() {},
         } as never });
         const model = runtime.getModel('privacy-fixture', 'offline');
         assert.ok(model);
         await session.setModel(model);
         const persistent = 'persistent' in scenario;
+        const automatic = persistent || 'default' in scenario;
         if (persistent) await session.prompt('/secret privacy always');
+        else if (!automatic) await session.prompt('/secret privacy ask');
+        notices.length = 0;
         await session.prompt(scenario.prompt, { source: scenario.mode === 'tui' ? 'interactive' : 'rpc' });
         assert.deepEqual(errors, []);
         assert.equal(wire.length > 0, scenario.sent, JSON.stringify(scenario));
@@ -70,7 +78,14 @@ export default function(pi) {
           assert.equal(wire[0]!.includes('person@example.com'), scenario.original);
           if (!scenario.original) assert.ok(wire[0]!.includes('p**********@****.com'));
           const asked = prompts.length;
-          assert.equal(asked, scenario.mode === 'tui' && !persistent ? 1 : 0);
+          assert.equal(asked, scenario.mode === 'tui' && !automatic ? 1 : 0);
+          if (automatic) {
+            assert.equal(notices.length, 1, 'one native info for a send, across every SDK hook');
+            assert.equal(notices[0]!.type, 'info');
+            assert.match(notices[0]!.message, /ofuscados/i);
+            assert.ok(!wire[0]!.includes(notices[0]!.message), 'native info never reaches the model');
+            assert.ok(!JSON.stringify(session.sessionManager.getBranch()).includes(notices[0]!.message), 'native info never becomes a session message');
+          }
           await session.reload();
           await session.prompt(scenario.prompt, { source: scenario.mode === 'tui' ? 'interactive' : 'rpc' });
           assert.equal(wire.length, 2);
@@ -78,6 +93,13 @@ export default function(pi) {
           assert.equal(wire[1]!.includes('person@example.com'), scenario.original);
           assert.deepEqual(JSON.parse(wire[1]!).audit_protocol, protocol);
           assert.ok(!wire[1]!.includes('pi-secrets-privacy'), 'consent entries are local state, not model context');
+          if (automatic) assert.equal(notices.length, 2, 'the next send receives its own info after reload');
+          if ('default' in scenario) {
+            await session.prompt('next@example.com', { source: scenario.mode === 'tui' ? 'interactive' : 'rpc' });
+            assert.equal(prompts.length, 0);
+            assert.equal(notices.length, 3, 'SDK settlement resets the info without needing a reload');
+            assert.ok(!wire[2]!.includes('next@example.com'));
+          }
           if (scenario.choice === PRIVACY_CHOICES[3]) {
             await session.prompt('different@example.com', { source: 'interactive' });
             assert.equal(prompts.length, 1, 'the selected session policy handles new values without another prompt');

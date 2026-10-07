@@ -16,9 +16,9 @@ export function privacySettings(root = defaultRoot()) {
     get(): PrivacyMode {
       try {
         const saved: unknown = JSON.parse(readFileSync(file, 'utf8'));
-        return saved && typeof saved === 'object' && 'mode' in saved && saved.mode === 'always' ? 'always' : 'ask';
+        return saved && typeof saved === 'object' && 'mode' in saved && saved.mode === 'ask' ? 'ask' : 'always';
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'ask';
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'always';
         throw new Error('Cannot read privacy settings. Use /secret privacy to set the mode again.');
       }
     },
