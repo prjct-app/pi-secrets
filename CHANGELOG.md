@@ -1,3 +1,9 @@
+## 0.2.4 (2026-10-06)
+
+- Add a persistent **Always obfuscate, never ask** privacy mode, shared across projects, destinations, sessions and reloads. It masks detected data without consent dialogs, masking notices or offers to store pasted credentials.
+- Expose the current mode in the Secrets TUI: choose the Privacy row with Enter or press `p`. Choose Ask to disable automatic mode. Add `/secret privacy`, `/secret privacy always` and `/secret privacy ask`.
+- Keep stored-credential redaction and encrypted provider protocol intact. Save only the mode in a private settings file; retain SDK session consent in Ask mode.
+
 ## 0.2.3 (2026-10-06)
 
 - Serialize concurrent privacy checks so one detected value triggers one consent dialog. A cancelled dialog also cancels already queued checks.

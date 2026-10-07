@@ -40,6 +40,7 @@ export default function(pi) {
       { choice: undefined, prompt: 'context fixture', sent: false, original: false, mode: 'tui' },
       { choice: PRIVACY_CHOICES[0], prompt: 'context fixture', sent: true, original: false, mode: 'tui' },
       { choice: PRIVACY_CHOICES[1], prompt: 'person@example.com', sent: true, original: false, mode: 'rpc' },
+      { choice: undefined, prompt: 'person@example.com', sent: true, original: false, mode: 'tui', persistent: true },
     ] as const) {
       wire.length = 0;
       const settings = SettingsManager.inMemory({ packages: [], extensions: ['-builtin:mcp'], compaction: { enabled: false }, cacheWarming: 'off' });
@@ -49,15 +50,18 @@ export default function(pi) {
       const runtime = await ModelRuntime.create({ authPath: join(base, 'auth.json'), modelsPath: join(base, 'models.json'), allowModelNetwork: false });
       const { session } = await createAgentSession({ cwd: base, agentDir: base, settingsManager: settings, resourceLoader: loader, modelRuntime: runtime, sessionManager: SessionManager.inMemory(base) });
       const errors: unknown[] = [];
+      const recordError = (error: unknown): void => { errors.push(error); };
       const prompts: string[] = [];
       try {
-        await session.bindExtensions({ mode: scenario.mode, onError: error => errors.push(error), uiContext: {
+        await session.bindExtensions({ mode: scenario.mode, onError: recordError, uiContext: {
           select: async (title: string) => { prompts.push(title); return scenario.choice; }, confirm: async () => false,
           notify() {}, setStatus() {}, setWidget() {}, setWorkingMessage() {},
         } as never });
         const model = runtime.getModel('privacy-fixture', 'offline');
         assert.ok(model);
         await session.setModel(model);
+        const persistent = 'persistent' in scenario;
+        if (persistent) await session.prompt('/secret privacy always');
         await session.prompt(scenario.prompt, { source: scenario.mode === 'tui' ? 'interactive' : 'rpc' });
         assert.deepEqual(errors, []);
         assert.equal(wire.length > 0, scenario.sent, JSON.stringify(scenario));
@@ -66,7 +70,7 @@ export default function(pi) {
           assert.equal(wire[0]!.includes('person@example.com'), scenario.original);
           if (!scenario.original) assert.ok(wire[0]!.includes('p**********@****.com'));
           const asked = prompts.length;
-          assert.equal(asked, scenario.mode === 'tui' ? 1 : 0);
+          assert.equal(asked, scenario.mode === 'tui' && !persistent ? 1 : 0);
           await session.reload();
           await session.prompt(scenario.prompt, { source: scenario.mode === 'tui' ? 'interactive' : 'rpc' });
           assert.equal(wire.length, 2);
@@ -79,6 +83,27 @@ export default function(pi) {
             assert.equal(prompts.length, 1, 'the selected session policy handles new values without another prompt');
             assert.ok(!wire[2]!.includes('different@example.com'));
             assert.ok(wire[2]!.includes('d**********@****.com'));
+          }
+          if (persistent) {
+            await loader.reload();
+            const { session: fresh } = await createAgentSession({ cwd: base, agentDir: base, settingsManager: settings, resourceLoader: loader, modelRuntime: runtime, sessionManager: SessionManager.inMemory(base) });
+            try {
+              await fresh.bindExtensions({ mode: 'tui', onError: recordError, uiContext: {
+                select: async (title: string) => { prompts.push(title); return undefined; },
+                confirm: async () => { assert.fail('automatic mode must not offer credential storage'); },
+                notify() {}, setStatus() {}, setWidget() {}, setWorkingMessage() {},
+              } as never });
+              await fresh.setModel(model);
+              await fresh.prompt('different@example.com', { source: 'interactive' });
+              assert.equal(prompts.length, 0, 'persistent mode needs no consent after reload or a new session');
+              assert.ok(!wire[2]!.includes('different@example.com'));
+              assert.ok(wire[2]!.includes('d**********@****.com'));
+              await fresh.prompt('/secret privacy ask');
+              const before = wire.length;
+              await fresh.prompt('another@example.com', { source: 'interactive' });
+              assert.equal(prompts.length, 1, 'turning automatic mode off restores consent');
+              assert.equal(wire.length, before, 'dismissing renewed consent sends nothing');
+            } finally { await fresh.abort(); fresh.dispose(); }
           }
         }
         assert.ok(!prompts.join('').includes('person@example.com'));

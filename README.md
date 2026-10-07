@@ -37,6 +37,7 @@ Every Pi on the machine reads the same keychain, so teammates in [pi-team](https
 | Key | Action |
 | --- | --- |
 | `n` | New secret: name, then the masked value, then where agents may use it |
+| `p` | Privacy settings: always obfuscate without asking, or ask before sending |
 | `r` | Replace the value; the name and scope stay, so agents keep working |
 | `a` | Give the secret to this project, or take it away |
 | `g` | Switch between every project and only this one |
@@ -48,6 +49,10 @@ Every Pi on the machine reads the same keychain, so teammates in [pi-team](https
 | `/secret set NAME [about]` | Store or replace a secret through the masked prompt. |
 | `/secret remove NAME` | Delete a secret after a confirmation. |
 | `/secret list` | Names, last six characters and scope. |
+| `/secret privacy` | Choose a persistent privacy mode in the TUI. Also available in the panel's **Privacy / Privacidad** row with Enter or `p`. |
+| `/secret privacy always` | Always obfuscate detected sensitive data without dialogs, notices or offers to store pasted credentials. |
+| `/secret privacy ask` | Turn off automatic mode and ask before sending detected sensitive data. Clears this session's previous choices. |
+| `/secret privacy reset` | Forget this session's choices while keeping the persistent mode. |
 
 Names are environment variable names: `A–Z`, digits and `_`, starting with a letter. `PATH`, `HOME` and similar shell names, and anything starting with `PI_`, are refused. Values need at least 4 characters, including short PINs and six-digit OTPs. Short values can also hide matching ordinary text in outputs.
 
@@ -76,7 +81,11 @@ Tests use an in-memory key store and never touch the real keychain.
 
 Before sending text to the selected model, pi-secrets detects email addresses, international phone numbers, Luhn-valid payment-card numbers in common formats, and the credential formats listed above. Detection runs locally. No classifier service receives the data.
 
-The terminal shows a masked preview such as `p**********@****.com` and four choices:
+For uninterrupted work, open `/secret`, select **Privacy / Privacidad**, and choose **Always obfuscate, never ask / Ofuscar siempre, sin preguntar**. This setting applies to every project, model, endpoint and session, survives reloads and restarts, and overrides earlier choices to send detected values unchanged. It masks detected PII and pasted credentials without confirmation, repeated notices or offers to store the pasted credential. Existing stored secrets remain redacted. Explicit commands to store or request a needed credential still open their intended prompts.
+
+To turn automatic mode off, select **Ask before sending / Preguntar antes de enviar** in the same TUI. The default for a new installation is Ask. Only the mode is saved in `${PRJCT_HOME:-~/.prjct}/pi-secrets/privacy.json` (mode 0600); no detected data or credential is written there. Other running Pi processes read the preference at their next outbound inspection.
+
+In Ask mode, the terminal shows a masked preview such as `p**********@****.com` and four choices:
 
 - **Obfuscate / Ofuscar** sends the masked text.
 - **Send original / Enviar original** explicitly permits these detected values for this model and endpoint in this session.
