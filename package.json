@@ -1,6 +1,6 @@
 {
   "name": "@prjct.app/pi-secrets",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "OS keychain credentials and local outbound privacy guardrails for Pi: confirm, obfuscate or cancel sensitive data before a model request.",
   "type": "module",
   "keywords": [
@@ -41,7 +41,7 @@
   },
   "dependencies": {
     "@napi-rs/keyring": "1.3.0",
-    "@prjct.app/pi-tui-kit": "^0.3.1"
+    "@prjct.app/pi-tui-kit": "^0.3.5"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "1.0.3",
