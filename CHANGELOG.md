@@ -1,3 +1,9 @@
+## 0.2.5 (2026-10-07)
+
+- Default to Always obfuscate when no privacy preference exists, including fresh projects and isolated agent homes. Ask remains an explicit TUI choice.
+- Show a native Pi `info` when sensitive data is masked, without adding a conversation or model message. Coalesce repeated hooks and retries until the public SDK run settles, and do not notify for unchanged text.
+- Cover stored-credential redaction as well as detected PII; preserve encrypted protocol data. Verify default masking, reload, RPC, explicit Ask and cancellation at the SDK HTTP boundary.
+
 ## 0.2.4 (2026-10-06)
 
 - Add a persistent **Always obfuscate, never ask** privacy mode, shared across projects, destinations, sessions and reloads. It masks detected data without consent dialogs, masking notices or offers to store pasted credentials.
