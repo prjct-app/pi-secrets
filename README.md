@@ -50,7 +50,7 @@ Every Pi on the machine reads the same keychain, so teammates in [pi-team](https
 | `/secret remove NAME` | Delete a secret after a confirmation. |
 | `/secret list` | Names, last six characters and scope. |
 | `/secret privacy` | Choose a persistent privacy mode in the TUI. Also available in the panel's **Privacy / Privacidad** row with Enter or `p`. |
-| `/secret privacy always` | Always obfuscate detected sensitive data without dialogs, notices or offers to store pasted credentials. |
+| `/secret privacy always` | Default: obfuscate detected sensitive data without dialogs or storage offers; show a native Pi info notice. |
 | `/secret privacy ask` | Turn off automatic mode and ask before sending detected sensitive data. Clears this session's previous choices. |
 | `/secret privacy reset` | Forget this session's choices while keeping the persistent mode. |
 
@@ -81,9 +81,9 @@ Tests use an in-memory key store and never touch the real keychain.
 
 Before sending text to the selected model, pi-secrets detects email addresses, international phone numbers, Luhn-valid payment-card numbers in common formats, and the credential formats listed above. Detection runs locally. No classifier service receives the data.
 
-For uninterrupted work, open `/secret`, select **Privacy / Privacidad**, and choose **Always obfuscate, never ask / Ofuscar siempre, sin preguntar**. This setting applies to every project, model, endpoint and session, survives reloads and restarts, and overrides earlier choices to send detected values unchanged. It masks detected PII and pasted credentials without confirmation, repeated notices or offers to store the pasted credential. Existing stored secrets remain redacted. Explicit commands to store or request a needed credential still open their intended prompts.
+**Always obfuscate, never ask / Ofuscar siempre, sin preguntar** is the default. It applies to every project, model, endpoint and session, survives reloads and restarts, and overrides earlier session choices to send detected values unchanged. It masks detected PII and pasted credentials without confirmation or offers to store the pasted credential. When data is masked, a native Pi `info` notice says **Datos sensibles ofuscados antes de enviarlos al modelo**. This notice is never inserted into the conversation or model context. Repeated hooks, retries and tool continuations share at most one notice until the SDK run settles; clean data does not trigger a notice. Existing stored secrets remain redacted. Explicit commands to store or request a needed credential still open their intended prompts.
 
-To turn automatic mode off, select **Ask before sending / Preguntar antes de enviar** in the same TUI. The default for a new installation is Ask. Only the mode is saved in `${PRJCT_HOME:-~/.prjct}/pi-secrets/privacy.json` (mode 0600); no detected data or credential is written there. Other running Pi processes read the preference at their next outbound inspection.
+To change the mode, open `/secret`, select the **Privacy / Privacidad** row with Enter or press `p`. Choose **Ask before sending / Preguntar antes de enviar** to enable consent dialogs explicitly, or choose **Always obfuscate** to disable them. Existing explicit Ask preferences are respected. Only the mode is saved in `${PRJCT_HOME:-~/.prjct}/pi-secrets/privacy.json` (mode 0600); no detected data or credential is written there. A missing preference defaults to Always. Other running Pi processes read the preference at their next outbound inspection; use `/reload` after installing an extension update to load its new behavior.
 
 In Ask mode, the terminal shows a masked preview such as `p**********@****.com` and four choices:
 
@@ -96,7 +96,7 @@ Decisions are saved as salted fingerprints in private SDK session entries, witho
 
 Stored keychain secrets are always redacted, even after authorizing PII. Declining an offer to store an unknown credential opens the privacy decision; it no longer implies permission to send it. Explicitly sending an unstored credential may expose it to both the model and session history.
 
-Coverage includes interactive input, outbound history and tool text, restored system instructions, and the SDK `before_provider_request` payload. Print/RPC/background sessions cannot obtain interactive consent, so newly detected data is masked automatically; one notice is emitted per loaded session instead of one per value. An explicitly selected automatic policy is quiet. A failed confirmation or inaccessible keychain cancels sending. Privacy notices never include the original detected value.
+Coverage includes interactive input, outbound history and tool text, restored system instructions, and the SDK `before_provider_request` payload. Print/RPC/background sessions cannot obtain interactive consent, so newly detected data is masked automatically. The extension uses the public SDK notification channel for masking info; it never adds a chat message. The standalone background helper has no UI and masks silently. A failed confirmation or inaccessible keychain cancels sending. Privacy notices never include the original detected value.
 
 Masking outbound context does not erase source files, previous session entries or tool output on disk. Images, binary attachments, encrypted reasoning, arbitrary encodings, names and addresses without recognizable patterns are outside this detector. Models and extensions can reconstruct information from surrounding context; masking is not anonymization. Other extensions must respect the SDK payload hook; independent HTTP calls cannot be intercepted by a Pi extension.
 
