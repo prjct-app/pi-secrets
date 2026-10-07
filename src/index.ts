@@ -11,6 +11,7 @@ import { createRedactor, createStreamRedactor, marker, type Known, type Redactor
 import { createVault, inScope, projectOf, type Entry, type KeyStore, type Scope } from './vault.ts';
 import { maskSensitiveData, resetOutboundProtection } from './privacy.ts';
 import { sessionPrivacy } from './consent-session.ts';
+import { privacySettings, PRIVACY_MODES, type PrivacyMode } from './privacy-settings.ts';
 
 export type InstallSecretsOptions = {
   /** Index folder; defaults to ${PRJCT_HOME:-~/.prjct}/pi-secrets. */
@@ -48,6 +49,9 @@ const HELP = [
   '/secret set NAME [about]     store or replace a secret; the value is typed into a masked prompt',
   '/secret remove NAME          delete a secret from the keychain',
   '/secret list                 names and where each one is available',
+  '/secret privacy              choose persistent privacy mode in the TUI',
+  '/secret privacy always       always obfuscate without asking',
+  '/secret privacy ask          turn off automatic mode and ask before sending',
   '/secret privacy reset        forget privacy choices for this session',
 ].join('\n');
 
@@ -55,6 +59,7 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
   repairToolArgs(pi);
   const vault = createVault({ root: options.root, keys: options.keys, now: options.now });
   const privacy = sessionPrivacy(pi);
+  const settings = privacySettings(options.root);
   const availability = { blocked: false };
   const protect = async <T>(value: T, ctx: ExtensionContext, interactive = ctx.hasUI && ctx.mode === 'tui') => {
     if (availability.blocked) {
@@ -62,7 +67,12 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
       return { value: maskSensitiveData(value), cancelled: true, changed: true };
     }
     const origin = (() => { try { return new URL(ctx.model?.baseUrl ?? '').origin; } catch { return 'configured endpoint'; } })();
-    try { return await privacy(ctx).inspect(value, {
+    try {
+      if (settings.get() === 'always') {
+        const masked = maskSensitiveData(value);
+        return { value: masked, cancelled: false, changed: masked !== value };
+      }
+      return await privacy(ctx).inspect(value, {
     destination: ctx.model ? `${ctx.model.provider}/${ctx.model.id} (${origin})` : 'selected model',
     interactive,
     choose: (preview, choices) => ctx.ui.select(preview, [...choices], { signal: ctx.signal }),
@@ -310,6 +320,7 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
       }
       return result.value !== event.text ? { action: 'transform' as const, text: result.value, images: event.images } : { action: 'continue' as const };
     };
+    if (settings.get() === 'always') return finish(text);
     if (hidden.length) ctx.ui.notify(`Hid the value of ${hidden.join(', ')} from your message; the agent sees ${hidden.map(marker).join(', ')}.`, 'info');
     const seen = event.source === 'interactive' && ctx.hasUI ? sight(text) : undefined;
     if (!seen) return finish(text);
@@ -371,6 +382,21 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
     return set(ctx, toName(typed));
   };
 
+  const configurePrivacy = async (ctx: ExtensionCommandContext, requested?: PrivacyMode): Promise<void> => {
+    const choice = requested ?? (ctx.hasUI && ctx.mode === 'tui'
+      ? await ctx.ui.select(`Privacy / Privacidad · ${PRIVACY_MODES[settings.get()]}\nApplies to every project and session / Se aplica a todos los proyectos y sesiones.`, Object.values(PRIVACY_MODES))
+      : undefined);
+    const mode = choice === 'always' || choice === PRIVACY_MODES.always ? 'always'
+      : choice === 'ask' || choice === PRIVACY_MODES.ask ? 'ask' : undefined;
+    if (!mode) {
+      if (!ctx.hasUI || ctx.mode !== 'tui') output(ctx, `Privacy: ${PRIVACY_MODES[settings.get()]}. /secret privacy always | ask`);
+      return;
+    }
+    settings.set(mode);
+    privacy(ctx).reset();
+    output(ctx, `${PRIVACY_MODES[mode]} · saved for every project and session / guardado para todos los proyectos y sesiones.`);
+  };
+
   const manage = async (ctx: ExtensionCommandContext, initial?: string): Promise<void> => {
     await refresh();
     const intent = { value: undefined as SecretIntent | undefined };
@@ -381,10 +407,12 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
       project: projectOf(ctx.cwd),
       remove,
       rescope,
+      privacyMode: () => settings.get(),
       request: next => { intent.value = next; },
     }, initial));
     const next = intent.value;
     if (!next) return;
+    if (next.action === 'privacy') { await configurePrivacy(ctx); return manage(ctx, '__privacy__'); }
     const name = next.action === 'create' ? await create(ctx) : await set(ctx, next.name);
     return manage(ctx, name ?? (next.action === 'replace' ? next.name : initial));
   };
@@ -392,6 +420,7 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
   const listText = (ctx: ExtensionCommandContext): string => panelText(secretPanelSpec({
     entries: () => vault.list(), value: name => store.get().values.get(name), cwd: ctx.cwd, project: projectOf(ctx.cwd),
     remove, rescope, request: () => {},
+    privacyMode: () => settings.get(),
   }));
 
   const names = (): readonly CommandOption[] => vault.list().map(entry => ({ value: entry.name, description: scopeText(entry) }));
@@ -402,7 +431,11 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
       { value: 'set', description: 'store or replace a secret through a masked prompt', options: names },
       { value: 'remove', description: 'delete a secret from the keychain', options: names },
       { value: 'list', description: 'names and where each one is available' },
-      { value: 'privacy', description: 'privacy choices', options: () => [{ value: 'reset', description: 'forget choices for this session' }] },
+      { value: 'privacy', description: 'persistent privacy mode', options: () => [
+        { value: 'always', description: 'always obfuscate without asking, across projects and sessions' },
+        { value: 'ask', description: 'turn off automatic mode and ask before sending' },
+        { value: 'reset', description: 'forget choices for this session; keep the persistent mode' },
+      ] },
       { value: 'help', description: 'usage' },
     ]),
     handler: async (args, ctx) => {
@@ -411,6 +444,11 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
         if (verb === 'privacy' && name === 'reset') {
           privacy(ctx).reset();
           ctx.ui.notify('Privacy choices reset for this session / Preferencias de privacidad restablecidas para esta sesión.', 'info');
+          return;
+        }
+        if (verb === 'privacy') {
+          if (name && name !== 'always' && name !== 'ask') { output(ctx, 'Usage: /secret privacy [always|ask|reset]', 'error'); return; }
+          await configurePrivacy(ctx, name === 'always' || name === 'ask' ? name : undefined);
           return;
         }
         if (['', 'list', 'set'].includes(verb)) resetOutboundProtection();

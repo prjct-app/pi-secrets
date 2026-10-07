@@ -1,10 +1,12 @@
 import { SYMBOL, ago, type PanelAction, type PanelItem, type PanelSpec } from '@prjct.app/pi-tui-kit';
 import { tail } from './names.ts';
 import { inScope, type Entry } from './vault.ts';
+import { PRIVACY_MODES, type PrivacyMode } from './privacy-settings.ts';
 
 /** What the panel asks the extension to do once it has closed (prompts cannot open over it). */
 export type SecretIntent =
   | { readonly action: 'create' }
+  | { readonly action: 'privacy' }
   | { readonly action: 'replace'; readonly name: string };
 
 export type SecretPanelOps = {
@@ -16,6 +18,7 @@ export type SecretPanelOps = {
   readonly remove: (name: string) => Promise<void>;
   readonly rescope: (name: string, scope: Entry['scope']) => void;
   readonly request: (intent: SecretIntent) => void;
+  readonly privacyMode?: () => PrivacyMode;
   readonly now?: () => number;
 };
 
@@ -33,6 +36,7 @@ export function secretPanelSpec(ops: SecretPanelOps, initial?: string): PanelSpe
   const ask = (panel: { close(): void }, intent: SecretIntent): void => { panel.close(); ops.request(intent); };
 
   const actions: PanelAction[] = [
+    ...(ops.privacyMode ? [{ key: 'p', label: 'Privacy / Privacidad', run: (_item, panel) => ask(panel, { action: 'privacy' }) } satisfies PanelAction] : []),
     { key: 'n', label: 'New secret', run: (_item, panel) => ask(panel, { action: 'create' }) },
     {
       key: 'r', label: item => `Replace ${item?.label ?? ''}`.trim(), when: item => !!entryOf(item),
@@ -78,7 +82,8 @@ export function secretPanelSpec(ops: SecretPanelOps, initial?: string): PanelSpe
       const here = entries.filter(entry => inScope(entry, ops.cwd)).length;
       return `${entries.length} stored · ${here} available here`;
     },
-    items: () => ops.entries().map(entry => {
+    items: () => [...(ops.privacyMode ? [{ id: '__privacy__', label: 'Privacy / Privacidad', symbol: SYMBOL.active,
+      meta: ops.privacyMode() === 'always' ? 'Always obfuscate / Ofuscar siempre' : 'Ask / Preguntar', search: 'settings privacy automatic ofuscar configuración' }] : []), ...ops.entries().map(entry => {
       const available = inScope(entry, ops.cwd);
       return {
         id: entry.name,
@@ -88,8 +93,18 @@ export function secretPanelSpec(ops: SecretPanelOps, initial?: string): PanelSpe
         meta: shown(entry),
         search: `${entry.description ?? ''} ${available ? 'available' : 'unavailable'}`,
       } satisfies PanelItem;
-    }),
+    })],
     detail: item => {
+      if (item.id === '__privacy__' && ops.privacyMode) return {
+        title: 'Privacy / Privacidad', subtitle: PRIVACY_MODES[ops.privacyMode()],
+        sections: [{ title: 'Settings / Configuración', lines: [
+          'Enter or p: change mode / Enter o p: cambiar modo.',
+          'Saved for every project and session / Guardado para todos los proyectos y sesiones.',
+          'Always obfuscate masks detected sensitive data without dialogs or storage offers.',
+          'Ofuscar siempre oculta los datos sensibles detectados sin preguntas ni ofertas de guardarlos.',
+          'Choose Ask to turn off automatic mode / Elige Preguntar para desactivar el modo automático.',
+        ] }],
+      };
       const entry = entryOf(item);
       if (!entry) return { title: item.label, subtitle: 'Deleted.' };
       const available = inScope(entry, ops.cwd);
@@ -115,6 +130,7 @@ export function secretPanelSpec(ops: SecretPanelOps, initial?: string): PanelSpe
       };
     },
     actions,
+    activate: ops.privacyMode ? { label: 'Change privacy / Cambiar privacidad', when: item => item?.id === '__privacy__', run: (_item, panel) => ask(panel, { action: 'privacy' }) } : undefined,
     empty: 'No secrets yet. Press n to add one; the value goes straight to the OS keychain.',
     initial,
   };
