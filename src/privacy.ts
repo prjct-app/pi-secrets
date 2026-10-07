@@ -3,7 +3,7 @@ export { mapText } from './protocol.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import { sightings } from './detect.ts';
 
-export const PRIVACY_CHOICES = ['Obfuscate / Ofuscar', 'Send original / Enviar original', 'Cancel / Cancelar'] as const;
+export const PRIVACY_CHOICES = ['Obfuscate / Ofuscar', 'Send original / Enviar original', 'Cancel / Cancelar', 'Automatically obfuscate for this session / Ofuscar automáticamente en esta sesión'] as const;
 export type Finding = Readonly<{ kind: string; value: string; masked: string }>;
 export type PrivacyContext = Readonly<{
   destination: string;
@@ -27,7 +27,10 @@ const luhn = (value: string): boolean => {
 /** Local patterns only: no PII is sent to a classifier to decide whether it is PII. */
 export function findSensitive(text: string): readonly Finding[] {
   const credentials = sightings(text).map(item => ({ kind: item.label, value: item.value, masked: `[redacted:${item.name}]` }));
-  const emails = [...text.matchAll(EMAIL)].map(match => ({ kind: 'email', value: match[0], masked: maskEmail(match[0]) }));
+  const emails = [...text.matchAll(EMAIL)]
+    // Package versions such as typebox@1.3.7 are not email addresses.
+    .filter(match => /^(?:[a-z]{2,}|xn--[a-z0-9-]+)$/i.test(match[0].slice(match[0].lastIndexOf('.') + 1)))
+    .map(match => ({ kind: 'email', value: match[0], masked: maskEmail(match[0]) }));
   const cards = [...text.matchAll(/(?<![A-Za-z0-9_])(?=(\d{13,19}|\d{4}(?:[ -]\d{4}){3}|\d{4}[ -]\d{6}[ -]\d{5})(?![A-Za-z0-9_]))/g)]
     .map(match => match[1]!).filter(luhn)
     .map(value => ({ kind: 'payment card', value, masked: `************${value.replace(/\D/g, '').slice(-4)}` }));
@@ -79,30 +82,82 @@ export async function protectOutboundData<T>(value: T, options: VaultOptions = {
   return maskSensitiveData(redactor.deep(value));
 }
 
-export function createPrivacyGuard() {
-  const salt = randomBytes(32);
-  const decisions = new Map<string, 'send' | 'mask'>();
-  const key = (destination: string, value: string): string => createHash('sha256').update(salt).update(destination).update('\0').update(value).digest('hex');
-  return {
-    reset: (): void => { decisions.clear(); },
-    async inspect<T>(value: T, ctx: PrivacyContext): Promise<{ value: T; cancelled: boolean; changed: boolean }> {
+type Decision = 'send' | 'mask';
+export type PrivacySnapshot = Readonly<{
+  v: 1;
+  salt: string;
+  decisions: readonly (readonly [string, Decision])[];
+  automatic: readonly string[];
+}>;
+const digest = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const isDecision = (value: unknown): value is readonly [string, Decision] =>
+  Array.isArray(value) && value.length === 2 && digest(value[0]) && (value[1] === 'send' || value[1] === 'mask');
+const isSnapshot = (value: unknown): value is PrivacySnapshot => {
+  if (!value || typeof value !== 'object') return false;
+  const data = value as Record<string, unknown>;
+  return data.v === 1 && digest(data.salt) && Array.isArray(data.decisions) && data.decisions.every(isDecision)
+    && Array.isArray(data.automatic) && data.automatic.every(digest);
+};
+const newState = (saved?: unknown) => {
+  const snapshot = isSnapshot(saved) ? saved : undefined;
+  return { salt: snapshot?.salt ?? randomBytes(32).toString('hex'), decisions: new Map<string, Decision>(snapshot?.decisions),
+    automatic: new Set(snapshot?.automatic), queue: Promise.resolve<unknown>(undefined), notified: false, generation: 0 };
+};
+
+export function createPrivacyGuard(options: { onChange?: (snapshot: PrivacySnapshot) => void } = {}) {
+  const cell = { state: newState() };
+  const snapshot = (): PrivacySnapshot => ({ v: 1, salt: cell.state.salt, decisions: [...cell.state.decisions], automatic: [...cell.state.automatic] });
+  const changed = (): void => { options.onChange?.(snapshot()); };
+  const inspect = async <T>(value: T, ctx: PrivacyContext, state: ReturnType<typeof newState>, generation: number): Promise<{ value: T; cancelled: boolean; changed: boolean }> => {
+      if (state !== cell.state || generation !== state.generation) return { value: maskSensitiveData(value), cancelled: true, changed: true };
+      const key = (value: string): string => createHash('sha256').update(state.salt).update(ctx.destination).update('\0').update(value).digest('hex');
       const found = new Map<string, Finding>();
       mapText(value, text => { for (const item of findSensitive(text)) found.set(item.value, item); return text; });
-      const pending = [...found.values()].filter(item => !decisions.has(key(ctx.destination, item.value)));
-      const selected = pending.length && ctx.interactive
-        ? await ctx.choose(`Sensitive data / Datos sensibles → ${ctx.destination}\n${pending.slice(0, 8).map(item => `${item.kind}: ${item.masked}`).join('\n')}${pending.length > 8 ? `\n+${pending.length - 8} more` : ''}\nChoice applies to these values and this destination for this session. / La elección aplica a estos datos y destino durante esta sesión.`, PRIVACY_CHOICES)
+      const pending = [...found.values()].filter(item => !state.decisions.has(key(item.value)));
+      const automatic = state.automatic.has(key(''));
+      const selected = pending.length && ctx.interactive && !automatic
+        ? await ctx.choose(`Sensitive data / Datos sensibles → ${ctx.destination}\n${pending.slice(0, 8).map(item => `${item.kind}: ${item.masked}`).join('\n')}${pending.length > 8 ? `\n+${pending.length - 8} more` : ''}\nRemember these values for this session and destination. Automatic obfuscation also covers new values. Reset with /secret privacy reset.\nRecordar estos datos para esta sesión y destino. La ofuscación automática incluye datos nuevos. Restablecer con /secret privacy reset.`, PRIVACY_CHOICES)
         : PRIVACY_CHOICES[0];
-      const cancelled = pending.length > 0 && ctx.interactive && selected !== PRIVACY_CHOICES[0] && selected !== PRIVACY_CHOICES[1];
-      if (!cancelled) for (const item of pending) decisions.set(key(ctx.destination, item.value), selected === PRIVACY_CHOICES[1] ? 'send' : 'mask');
-      if (pending.length && !ctx.interactive) ctx.notify(`Obfuscated ${pending.length} sensitive value(s) before sending to ${ctx.destination}; interactive consent is unavailable.`);
+      const cancelled = state !== cell.state || (pending.length > 0 && ctx.interactive
+        && selected !== PRIVACY_CHOICES[0] && selected !== PRIVACY_CHOICES[1] && selected !== PRIVACY_CHOICES[3]);
+      if (cancelled && generation === state.generation) state.generation++;
+      if (!cancelled && pending.length) {
+        if (selected === PRIVACY_CHOICES[3]) {
+          state.automatic.add(key(''));
+          changed();
+        } else if (!automatic) {
+          for (const item of pending) state.decisions.set(key(item.value), selected === PRIVACY_CHOICES[1] ? 'send' : 'mask');
+          changed();
+        }
+      }
+      if (!cancelled && pending.length && !ctx.interactive && !automatic && !state.notified) {
+        state.notified = true;
+        ctx.notify(`Obfuscating sensitive data before sending to ${ctx.destination}; interactive consent is unavailable. Further background notices are suppressed for this session.`);
+      }
       const changes = { value: false };
       const sanitized = mapText(value, text => [...found.values()].sort((a, b) => b.value.length - a.value.length).reduce((result, item) => {
-        if (!cancelled && decisions.get(key(ctx.destination, item.value)) === 'send') return result;
+        if (!cancelled && !state.automatic.has(key('')) && state.decisions.get(key(item.value)) === 'send') return result;
         const next = replaceFinding(result, item);
         if (next !== result) changes.value = true;
         return next;
       }, text));
       return { value: sanitized, cancelled, changed: changes.value };
+  };
+  return {
+    snapshot,
+    restore: (saved?: unknown): void => { cell.state = newState(saved); },
+    reset: (): void => { cell.state = newState(); changed(); },
+    inspect<T>(value: T, ctx: PrivacyContext): Promise<{ value: T; cancelled: boolean; changed: boolean }> {
+      const state = cell.state;
+      const generation = state.generation;
+      // Recheck decisions after earlier dialogs finish; simultaneous hooks share
+      // consent instead of presenting one dialog per request.
+      const next = state.queue.then(() => inspect(value, ctx, state, generation)).catch(error => {
+        if (generation === state.generation) state.generation++;
+        throw error;
+      });
+      state.queue = next.catch(() => undefined);
+      return next;
     },
   };
 }

@@ -37,3 +37,9 @@
 * Every form of every value is redacted from tool results, `!` commands, and the model context.
 * Stored values typed into the editor are hidden; credential-shaped pastes are offered to the keychain.
 * `/secret` panel: new, replace, delete, per-project scope, and the last six characters.
+## 0.2.3 (2026-10-06)
+
+- Serialize concurrent privacy checks so one detected value triggers one consent dialog. A cancelled dialog also cancels already queued checks.
+- Remember choices through the public SDK session store across extension reloads, without storing raw detected values. Add `/secret privacy reset` to revoke them.
+- Offer automatic obfuscation for the current session and destination; reduce background masking notices to one per loaded session.
+- Stop detecting npm package versions as email addresses. Keep stored-credential redaction and opaque provider protocol preservation.

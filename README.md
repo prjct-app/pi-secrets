@@ -76,15 +76,18 @@ Tests use an in-memory key store and never touch the real keychain.
 
 Before sending text to the selected model, pi-secrets detects email addresses, international phone numbers, Luhn-valid payment-card numbers in common formats, and the credential formats listed above. Detection runs locally. No classifier service receives the data.
 
-The terminal shows a masked preview such as `p**********@****.com` and three choices:
+The terminal shows a masked preview such as `p**********@****.com` and four choices:
 
 - **Obfuscate / Ofuscar** sends the masked text.
 - **Send original / Enviar original** explicitly permits these detected values for this model and endpoint in this session.
 - **Cancel / Cancelar**, including dismissing the dialog, stops the request.
+- **Automatically obfuscate for this session / Ofuscar automáticamente en esta sesión** masks current and future detected values for this model and endpoint without another dialog. It also overrides earlier choices to send a value unchanged. Other destinations still require their own choice.
 
-Decisions are held as salted hashes in process memory and reset when the session changes. Stored keychain secrets are always redacted, even after authorizing PII. Declining an offer to store an unknown credential opens the privacy decision; it no longer implies permission to send it. Explicitly sending an unstored credential may expose it to both the model and session history.
+Decisions are saved as salted fingerprints in private SDK session entries, without copying the detected values. They survive an extension reload or resuming the same session; a new session or a branch without those decisions starts fresh. Concurrent inspections of the same value share one dialog, and cancelling it also cancels already queued inspections. Run `/secret privacy reset` to forget the session's choices. Package versions such as `typebox@1.3.7` are not treated as email addresses.
 
-Coverage includes interactive input, outbound history and tool text, restored system instructions, and the SDK `before_provider_request` payload. Print/RPC/background sessions cannot obtain interactive consent, so newly detected data is masked automatically and a notice is emitted. A failed confirmation or inaccessible keychain cancels sending. Privacy notices never include the original detected value.
+Stored keychain secrets are always redacted, even after authorizing PII. Declining an offer to store an unknown credential opens the privacy decision; it no longer implies permission to send it. Explicitly sending an unstored credential may expose it to both the model and session history.
+
+Coverage includes interactive input, outbound history and tool text, restored system instructions, and the SDK `before_provider_request` payload. Print/RPC/background sessions cannot obtain interactive consent, so newly detected data is masked automatically; one notice is emitted per loaded session instead of one per value. An explicitly selected automatic policy is quiet. A failed confirmation or inaccessible keychain cancels sending. Privacy notices never include the original detected value.
 
 Masking outbound context does not erase source files, previous session entries or tool output on disk. Images, binary attachments, encrypted reasoning, arbitrary encodings, names and addresses without recognizable patterns are outside this detector. Models and extensions can reconstruct information from surrounding context; masking is not anonymization. Other extensions must respect the SDK payload hook; independent HTTP calls cannot be intercepted by a Pi extension.
 
