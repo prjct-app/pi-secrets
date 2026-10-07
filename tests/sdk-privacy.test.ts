@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from '@earendil-works/pi-coding-agent';
 import { PRIVACY_CHOICES } from '../src/privacy.ts';
 
-test('real SDK HTTP boundary: mask, explicit send, input cancel, context cancel and RPC', async () => {
+test('real SDK HTTP boundary: consent, cancellation, RPC and reload without repeated dialogs', async () => {
   const wire: string[] = [];
   const protocol = { type: 'reasoning', id: 'rs_04f9f4111111111111111b535', encrypted_content: 'ciphertext-must-remain-exact' };
   const server = createServer(async (request, response) => {
@@ -35,6 +35,7 @@ export default function(pi) {
     for (const scenario of [
       { choice: PRIVACY_CHOICES[0], prompt: 'person@example.com', sent: true, original: false, mode: 'tui' },
       { choice: PRIVACY_CHOICES[1], prompt: 'person@example.com', sent: true, original: true, mode: 'tui' },
+      { choice: PRIVACY_CHOICES[3], prompt: 'person@example.com', sent: true, original: false, mode: 'tui' },
       { choice: undefined, prompt: 'person@example.com', sent: false, original: false, mode: 'tui' },
       { choice: undefined, prompt: 'context fixture', sent: false, original: false, mode: 'tui' },
       { choice: PRIVACY_CHOICES[0], prompt: 'context fixture', sent: true, original: false, mode: 'tui' },
@@ -64,9 +65,25 @@ export default function(pi) {
           assert.deepEqual(JSON.parse(wire[0]!).audit_protocol, protocol);
           assert.equal(wire[0]!.includes('person@example.com'), scenario.original);
           if (!scenario.original) assert.ok(wire[0]!.includes('p**********@****.com'));
+          const asked = prompts.length;
+          assert.equal(asked, scenario.mode === 'tui' ? 1 : 0);
+          await session.reload();
+          await session.prompt(scenario.prompt, { source: scenario.mode === 'tui' ? 'interactive' : 'rpc' });
+          assert.equal(wire.length, 2);
+          assert.equal(prompts.length, asked, 'reload and repeated provider hooks preserve the choice');
+          assert.equal(wire[1]!.includes('person@example.com'), scenario.original);
+          assert.deepEqual(JSON.parse(wire[1]!).audit_protocol, protocol);
+          assert.ok(!wire[1]!.includes('pi-secrets-privacy'), 'consent entries are local state, not model context');
+          if (scenario.choice === PRIVACY_CHOICES[3]) {
+            await session.prompt('different@example.com', { source: 'interactive' });
+            assert.equal(prompts.length, 1, 'the selected session policy handles new values without another prompt');
+            assert.ok(!wire[2]!.includes('different@example.com'));
+            assert.ok(wire[2]!.includes('d**********@****.com'));
+          }
         }
         assert.ok(!prompts.join('').includes('person@example.com'));
         if (scenario.mode === 'rpc') assert.equal(prompts.length, 0);
+        assert.deepEqual(errors, []);
       } finally { await session.abort(); session.dispose(); }
     }
   } finally {

@@ -9,7 +9,8 @@ import { NAME_RULE, mentions, tail, toName, validName, valueProblem } from './na
 import { secretPanelSpec, scopeText, type SecretIntent } from './panel.ts';
 import { createRedactor, createStreamRedactor, marker, type Known, type Redactor } from './redact.ts';
 import { createVault, inScope, projectOf, type Entry, type KeyStore, type Scope } from './vault.ts';
-import { createPrivacyGuard, maskSensitiveData, resetOutboundProtection } from './privacy.ts';
+import { maskSensitiveData, resetOutboundProtection } from './privacy.ts';
+import { sessionPrivacy } from './consent-session.ts';
 
 export type InstallSecretsOptions = {
   /** Index folder; defaults to ${PRJCT_HOME:-~/.prjct}/pi-secrets. */
@@ -47,12 +48,13 @@ const HELP = [
   '/secret set NAME [about]     store or replace a secret; the value is typed into a masked prompt',
   '/secret remove NAME          delete a secret from the keychain',
   '/secret list                 names and where each one is available',
+  '/secret privacy reset        forget privacy choices for this session',
 ].join('\n');
 
 export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions = {}): void {
   repairToolArgs(pi);
   const vault = createVault({ root: options.root, keys: options.keys, now: options.now });
-  const privacy = createPrivacyGuard();
+  const privacy = sessionPrivacy(pi);
   const availability = { blocked: false };
   const protect = async <T>(value: T, ctx: ExtensionContext, interactive = ctx.hasUI && ctx.mode === 'tui') => {
     if (availability.blocked) {
@@ -60,7 +62,7 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
       return { value: maskSensitiveData(value), cancelled: true, changed: true };
     }
     const origin = (() => { try { return new URL(ctx.model?.baseUrl ?? '').origin; } catch { return 'configured endpoint'; } })();
-    try { return await privacy.inspect(value, {
+    try { return await privacy(ctx).inspect(value, {
     destination: ctx.model ? `${ctx.model.provider}/${ctx.model.id} (${origin})` : 'selected model',
     interactive,
     choose: (preview, choices) => ctx.ui.select(preview, [...choices], { signal: ctx.signal }),
@@ -70,9 +72,6 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
       return { value: maskSensitiveData(value), cancelled: true, changed: true };
     }
   };
-  pi.on('session_start', async () => { privacy.reset(); });
-  pi.on('session_before_switch', async () => { privacy.reset(); });
-  pi.on('session_shutdown', async () => { privacy.reset(); });
   const cell = {
     value: {
       stamp: -1, values: new Map(), retired: [], redactor: createRedactor([]), pending: new Map(), files: new Set(),
@@ -403,11 +402,17 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
       { value: 'set', description: 'store or replace a secret through a masked prompt', options: names },
       { value: 'remove', description: 'delete a secret from the keychain', options: names },
       { value: 'list', description: 'names and where each one is available' },
+      { value: 'privacy', description: 'privacy choices', options: () => [{ value: 'reset', description: 'forget choices for this session' }] },
       { value: 'help', description: 'usage' },
     ]),
     handler: async (args, ctx) => {
       const [verb = '', name = '', ...rest] = args.trim().split(/\s+/).filter(Boolean);
       try {
+        if (verb === 'privacy' && name === 'reset') {
+          privacy(ctx).reset();
+          ctx.ui.notify('Privacy choices reset for this session / Preferencias de privacidad restablecidas para esta sesión.', 'info');
+          return;
+        }
         if (['', 'list', 'set'].includes(verb)) resetOutboundProtection();
         if (availability.blocked && ['', 'list', 'set'].includes(verb)) {
           await refresh(true);

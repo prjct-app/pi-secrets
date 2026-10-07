@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { createBashTool, type ExtensionAPI, type ToolDefinition } from '@earendil-works/pi-coding-agent';
+import { createBashTool, SessionManager, type ExtensionAPI, type ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { installSecrets } from '../src/index.ts';
 import { memoryKeys } from './keys.ts';
 import { PRIVACY_CHOICES } from '../src/privacy.ts';
@@ -16,6 +16,7 @@ function harness(ui: { value?: string; select?: string; confirm?: boolean; input
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'pi-secrets-ext-')));
   const cwd = join(base, 'project');
   const keys = memoryKeys();
+  const sessionManager = SessionManager.inMemory(cwd);
   const handlers = new Map<string, Handler[]>();
   const tools = new Map<string, ToolDefinition>();
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
@@ -24,7 +25,7 @@ function harness(ui: { value?: string; select?: string; confirm?: boolean; input
   const editor: string[] = [];
   const aborted = { count: 0 };
   const ctx = {
-    cwd, mode: 'tui', hasUI: true,
+    cwd, mode: 'tui', hasUI: true, sessionManager,
     model: { provider: 'offline', id: 'fixture', baseUrl: 'http://localhost' },
     abort: () => { aborted.count++; },
     ui: {
@@ -37,6 +38,7 @@ function harness(ui: { value?: string; select?: string; confirm?: boolean; input
     },
   };
   const pi = {
+    appendEntry: (customType: string, data: unknown) => sessionManager.appendCustomEntry(customType, data),
     on: (name: string, handler: Handler) => handlers.set(name, [...handlers.get(name) ?? [], handler]),
     registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
     registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => commands.set(name, command),
@@ -52,6 +54,10 @@ function harness(ui: { value?: string; select?: string; confirm?: boolean; input
     tool: (name: string, params: unknown) => tools.get(name)!.execute('call', params as never, undefined, undefined, ctx as never),
     command: (text: string) => commands.get('secret')!.handler(text, ctx),
     tools,
+    reload: () => {
+      handlers.clear(); tools.clear(); commands.clear();
+      installSecrets(pi, { root: join(base, 'index'), keys, tmp: join(base, 'tmp') });
+    },
     cleanup: () => rmSync(base, { recursive: true, force: true }),
   };
 }
@@ -232,14 +238,15 @@ test('the panel shows names with the last six characters and nothing more', asyn
   assert.deepEqual(spec.actions!.filter(action => !action.when || action.when(item)).map(action => action.key), ['n', 'r', 'g', 'x']);
 });
 
-test('PII input offers masked previews and all three choices', async () => {
+test('PII input offers masked previews and explicit value or session choices', async () => {
   for (const choice of PRIVACY_CHOICES) {
     const h = harness({ select: choice });
     const email = 'person@example.com';
     try {
       const result = await h.emit('input', { type: 'input', text: `Contact ${email}`, source: 'interactive' });
-      assert.equal(result.action, choice === PRIVACY_CHOICES[0] ? 'transform' : choice === PRIVACY_CHOICES[1] ? 'continue' : 'handled');
-      if (choice === PRIVACY_CHOICES[0]) assert.equal(result.text, 'Contact p**********@****.com');
+      const masks = choice === PRIVACY_CHOICES[0] || choice === PRIVACY_CHOICES[3];
+      assert.equal(result.action, masks ? 'transform' : choice === PRIVACY_CHOICES[1] ? 'continue' : 'handled');
+      if (masks) assert.equal(result.text, 'Contact p**********@****.com');
       assert.ok(h.prompts.some(prompt => prompt.includes('p**********@****.com')));
       assert.ok(!JSON.stringify(h.prompts).includes(email));
     } finally { h.cleanup(); }
@@ -279,6 +286,10 @@ test('consent persists only for the same destination and session', async () => {
     assert.equal(h.prompts.length, 2);
     await h.emit('session_before_switch', {});
     await h.emit('context', event);
+    assert.equal(h.prompts.length, 2, 'a cancelled switch must not erase consent');
+    h.ctx.sessionManager.newSession();
+    await h.emit('session_start', {});
+    await h.emit('context', event);
     assert.equal(h.prompts.length, 3);
   } finally { h.cleanup(); }
 });
@@ -290,7 +301,49 @@ test('headless and RPC requests obfuscate without a confirmation dialog', async 
     const result = await h.emit('input', { text: 'person@example.com', source: 'rpc' });
     assert.equal(result.text, 'p**********@****.com');
     assert.equal(h.prompts.length, 0);
-    assert.ok(h.notices.some(notice => notice.includes('Obfuscated')));
+    assert.ok(h.notices.some(notice => notice.includes('Obfuscating')));
+  } finally { h.cleanup(); }
+});
+
+test('consent survives all outbound hooks and an extension reload through SDK session entries', async () => {
+  const h = harness({ select: PRIVACY_CHOICES[1] });
+  const messages = [{ role: 'user', content: 'person@example.com' }];
+  try {
+    await h.emit('input', { text: 'person@example.com', source: 'interactive' });
+    for (const event of ['context', 'context_with_system', 'before_provider_request']) {
+      await h.emit(event, event === 'before_provider_request' ? { payload: { messages } } : { messages });
+    }
+    assert.equal(h.prompts.length, 1);
+    const entries = h.ctx.sessionManager.getBranch().filter(entry => entry.type === 'custom' && entry.customType === 'pi-secrets-privacy');
+    assert.equal(entries.length, 1);
+    assert.ok(!JSON.stringify(entries).includes('person@example.com'));
+    h.reload();
+    await h.emit('session_start', {});
+    const result = await h.emit('context', { messages });
+    assert.deepEqual(result.messages, messages);
+    assert.equal(h.prompts.length, 1, 'reload restores the choice rather than asking again');
+    h.ctx.model.baseUrl = 'https://another-endpoint.invalid';
+    await h.emit('context', { messages });
+    assert.equal(h.prompts.length, 2, 'another endpoint still needs consent');
+    await h.command('privacy reset');
+    await h.emit('context', { messages });
+    assert.equal(h.prompts.length, 3, 'the user can revoke stored choices');
+  } finally { h.cleanup(); }
+});
+
+test('automatic session masking survives reload and does not authorize another session', async () => {
+  const h = harness({ select: PRIVACY_CHOICES[3] });
+  try {
+    await h.emit('input', { text: 'first@example.com', source: 'interactive' });
+    h.reload();
+    await h.emit('session_start', {});
+    const result = await h.emit('input', { text: 'second@example.com', source: 'interactive' });
+    assert.equal(result.text, 's**********@****.com');
+    assert.equal(h.prompts.length, 1);
+    h.ctx.sessionManager.newSession();
+    await h.emit('session_start', {});
+    await h.emit('input', { text: 'second@example.com', source: 'interactive' });
+    assert.equal(h.prompts.length, 2);
   } finally { h.cleanup(); }
 });
 
