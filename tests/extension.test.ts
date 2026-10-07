@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomInt } from 'node:crypto';
-import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -110,6 +110,17 @@ test('default info covers stored secrets in restored context and preserves opaqu
     assert.equal(h.notices.length, 1);
     assert.deepEqual(h.levels, ['info']);
     assert.ok(!JSON.stringify(h.notices).includes(VALUE));
+  } finally { h.cleanup(); }
+});
+
+test('unreadable privacy settings still mask stored values while cancelling the request', async () => {
+  const h = harness({ value: 'opaque-credential-for-fixture', select: 'Every project' });
+  try {
+    await h.tool('secret_request', { name: 'TOKEN', reason: 'fixture' });
+    writeFileSync(join(h.base, 'index/privacy.json'), '{');
+    const result = await h.emit('context', { messages: [{ role: 'user', content: 'opaque-credential-for-fixture' }] });
+    assert.equal(result.messages[0].content, '[secret:TOKEN]');
+    assert.equal(h.aborted.count, 1);
   } finally { h.cleanup(); }
 });
 

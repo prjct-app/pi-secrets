@@ -77,7 +77,7 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
   const protect = async <T>(value: T, ctx: ExtensionContext, interactive = ctx.hasUI && ctx.mode === 'tui') => {
     if (availability.blocked) {
       ctx.ui.notify('Sending blocked: unlock the keychain to restore secret protection.', 'error');
-      return { value: maskSensitiveData(value), cancelled: true, changed: true };
+      return { value: maskSensitiveData(store.get().redactor.deep(value)), cancelled: true, changed: true };
     }
     const origin = (() => { try { return new URL(ctx.model?.baseUrl ?? '').origin; } catch { return 'configured endpoint'; } })();
     try {
@@ -100,10 +100,10 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
         notify: () => notifyProtection(ctx),
       });
       if (!result.cancelled && (result.changed || changes.value)) notifyProtection(ctx);
-      return result;
+      return { ...result, changed: result.changed || changes.value };
     } catch {
       ctx.ui.notify('Sending cancelled: privacy confirmation could not be completed.', 'error');
-      return { value: maskSensitiveData(value), cancelled: true, changed: true };
+      return { value: maskSensitiveData(store.get().redactor.deep(value)), cancelled: true, changed: true };
     }
   };
   const cell = {
