@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomInt } from 'node:crypto';
-import { mkdtempSync, readdirSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -8,6 +8,7 @@ import { createBashTool, SessionManager, type ExtensionAPI, type ToolDefinition 
 import { installSecrets } from '../src/index.ts';
 import { memoryKeys } from './keys.ts';
 import { PRIVACY_CHOICES } from '../src/privacy.ts';
+import { PRIVACY_MODES } from '../src/privacy-settings.ts';
 
 const VALUE = 'sk_test_51HxYzAbCdEfGhIjKlMnOp';
 type Handler = (event: any, ctx: any) => any;
@@ -345,6 +346,87 @@ test('automatic session masking survives reload and does not authorize another s
     await h.emit('input', { text: 'second@example.com', source: 'interactive' });
     assert.equal(h.prompts.length, 2);
   } finally { h.cleanup(); }
+});
+
+test('persistent automatic mode masks new data concurrently across reloads, sessions and destinations with no dialogs or notices', async () => {
+  const h = harness({ select: PRIVACY_CHOICES[1] });
+  try {
+    await h.emit('input', { text: 'person@example.com', source: 'interactive' });
+    await h.command('privacy always');
+    h.prompts.length = 0; h.notices.length = 0;
+    const results = await Promise.all(Array.from({ length: 50 }, (_, i) =>
+      h.emit('input', { text: `person${i}@example.com ${VALUE}`, source: 'interactive' })));
+    assert.ok(results.every(result => result.action === 'transform' && !result.text.includes('@example.com') && !result.text.includes(VALUE)));
+    assert.equal(h.keys.map.size, 0, 'automatic mode does not offer to store pasted credentials');
+    h.reload();
+    h.ctx.sessionManager.newSession();
+    h.ctx.model = { provider: 'other', id: 'other', baseUrl: 'https://other.invalid' };
+    await h.emit('session_start', {});
+    for (const event of ['context', 'context_with_system', 'before_provider_request']) {
+      const messages = [{ role: 'user', content: 'person@example.com different@example.com' }];
+      const result = await h.emit(event, event === 'before_provider_request' ? { payload: { messages } } : { messages }, join(h.base, 'another-project'));
+      assert.ok(!JSON.stringify(result).includes('@example.com'));
+    }
+    await h.command('privacy reset');
+    h.notices.length = 0;
+    await h.emit('input', { text: 'after-reset@example.com', source: 'interactive' });
+    assert.deepEqual(h.prompts, []);
+    assert.deepEqual(h.notices, []);
+    const config = join(h.base, 'index', 'privacy.json');
+    assert.deepEqual(JSON.parse(readFileSync(config, 'utf8')), { version: 1, mode: 'always' });
+    assert.equal(statSync(config).mode & 0o777, 0o600);
+    assert.equal(h.aborted.count, 0);
+  } finally { h.cleanup(); }
+});
+
+test('the TUI can enable and disable persistent masking, including an earlier automatic session choice', async () => {
+  const ui = { select: PRIVACY_CHOICES[3] as string };
+  const h = harness(ui);
+  try {
+    await h.emit('input', { text: 'person@example.com', source: 'interactive' });
+    ui.select = PRIVACY_MODES.always;
+    await h.command('privacy');
+    h.reload();
+    const before = h.prompts.length;
+    await h.emit('input', { text: 'person@example.com', source: 'interactive' });
+    assert.equal(h.prompts.length, before);
+    ui.select = PRIVACY_MODES.ask;
+    await h.command('privacy');
+    ui.select = PRIVACY_CHOICES[1];
+    const result = await h.emit('input', { text: 'person@example.com', source: 'interactive' });
+    assert.equal(result.action, 'continue');
+    assert.equal(h.prompts.length, before + 2, 'settings selection and renewed consent');
+    assert.equal(JSON.parse(readFileSync(join(h.base, 'index/privacy.json'), 'utf8')).mode, 'ask');
+  } finally { h.cleanup(); }
+});
+
+test('Secrets exposes privacy settings through a visible row, Enter and p even with an empty vault', async () => {
+  const { secretPanelSpec } = await import('../src/panel.ts');
+  const { createPanel } = await import('@prjct.app/pi-tui-kit');
+  const { visibleWidth } = await import('@earendil-works/pi-tui');
+  const requests: unknown[] = [];
+  const closed = { count: 0 };
+  const spec = secretPanelSpec({
+    entries: () => [], value: () => undefined, cwd: '/tmp', project: '/tmp',
+    remove: async () => {}, rescope: () => {}, request: intent => requests.push(intent), privacyMode: () => 'always',
+  });
+  const row = spec.items()[0]!;
+  assert.equal(row.id, '__privacy__');
+  assert.match(spec.detail(row).subtitle!, /Ofuscar siempre/);
+  assert.ok(spec.activate?.when?.(row));
+  for (const [key, width] of [['\r', 120], ['p', 60]] as const) {
+    const panel = createPanel(spec, { terminal: { rows: 30, columns: width }, requestRender() {} } as never,
+      { fg: (_tone: string, text: string) => text, bold: (text: string) => text } as never, () => { closed.count++; });
+    try {
+      const lines = panel.render(width);
+      assert.match(lines.join('\n'), /Privacy/);
+      assert.ok(lines.every(line => visibleWidth(line) <= width), 'privacy settings fit a narrow terminal');
+      panel.handleInput!(key);
+      await new Promise(resolve => setImmediate(resolve));
+    } finally { panel.dispose(); }
+  }
+  assert.equal(closed.count, 2);
+  assert.deepEqual(requests, [{ action: 'privacy' }, { action: 'privacy' }]);
 });
 
 test('consent to PII never reveals stored credentials and notices contain no raw PII', async () => {
