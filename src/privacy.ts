@@ -70,9 +70,13 @@ const replaceFinding = (text: string, item: Finding): string => {
   return text.replace(new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`, 'g'), () => item.masked);
 };
 
-/** For background SDK consumers that cannot ask for consent. */
-export const maskSensitiveData = <T>(value: T): T => mapText(value, text =>
-  scanSensitive(text).reduce((result, item) => replaceFinding(result, item), text));
+/** For background SDK consumers that cannot ask for consent. onMasked hears each finding that was actually replaced. */
+export const maskSensitiveData = <T>(value: T, onMasked?: (item: Finding) => void): T => mapText(value, text =>
+  scanSensitive(text).reduce((result, item) => {
+    const next = replaceFinding(result, item);
+    if (next !== result) onMasked?.(item);
+    return next;
+  }, text));
 
 type VaultOptions = Parameters<typeof import('./vault.ts').createVault>[0];
 type Redactor = ReturnType<typeof import('./redact.ts').createRedactor>;
@@ -130,8 +134,12 @@ export function createPrivacyGuard(options: { onChange?: (snapshot: PrivacySnaps
   const cell = { state: newState() };
   const snapshot = (): PrivacySnapshot => ({ v: 1, salt: cell.state.salt, decisions: [...cell.state.decisions], automatic: [...cell.state.automatic] });
   const changed = (): void => { options.onChange?.(snapshot()); };
-  const inspect = async <T>(value: T, ctx: PrivacyContext, state: ReturnType<typeof newState>, generation: number): Promise<{ value: T; cancelled: boolean; changed: boolean }> => {
-      if (state !== cell.state || generation !== state.generation) return { value: maskSensitiveData(value), cancelled: true, changed: true };
+  type Inspection<T> = { value: T; cancelled: boolean; changed: boolean; masked: readonly Finding[] };
+  const inspect = async <T>(value: T, ctx: PrivacyContext, state: ReturnType<typeof newState>, generation: number): Promise<Inspection<T>> => {
+      if (state !== cell.state || generation !== state.generation) {
+        const masked: Finding[] = [];
+        return { value: maskSensitiveData(value, item => masked.push(item)), cancelled: true, changed: true, masked };
+      }
       const key = (value: string): string => createHash('sha256').update(state.salt).update(ctx.destination).update('\0').update(value).digest('hex');
       const found = new Map<string, Finding>();
       mapText(value, text => { for (const item of scanSensitive(text)) found.set(item.value, item); return text; });
@@ -157,21 +165,22 @@ export function createPrivacyGuard(options: { onChange?: (snapshot: PrivacySnaps
         ctx.notify(`Obfuscating sensitive data before sending to ${ctx.destination}; interactive consent is unavailable. Further background notices are suppressed for this session.`);
       }
       const changes = { value: false };
+      const masked = new Map<string, Finding>();
       const replacements = [...found.values()]
         .filter(item => cancelled || state.automatic.has(key('')) || state.decisions.get(key(item.value)) !== 'send')
         .sort((a, b) => b.value.length - a.value.length);
       const sanitized = replacements.length ? mapText(value, text => replacements.reduce((result, item) => {
         const next = replaceFinding(result, item);
-        if (next !== result) changes.value = true;
+        if (next !== result) { changes.value = true; masked.set(item.value, item); }
         return next;
       }, text)) : value;
-      return { value: sanitized, cancelled, changed: changes.value };
+      return { value: sanitized, cancelled, changed: changes.value, masked: [...masked.values()] };
   };
   return {
     snapshot,
     restore: (saved?: unknown): void => { cell.state = newState(saved); },
     reset: (): void => { cell.state = newState(); changed(); },
-    inspect<T>(value: T, ctx: PrivacyContext): Promise<{ value: T; cancelled: boolean; changed: boolean }> {
+    inspect<T>(value: T, ctx: PrivacyContext): Promise<Inspection<T>> {
       const state = cell.state;
       const generation = state.generation;
       // Recheck decisions after earlier dialogs finish; simultaneous hooks share

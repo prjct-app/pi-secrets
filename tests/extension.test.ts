@@ -76,7 +76,7 @@ test('default privacy masks 50 concurrent sends with one native info and no conv
     assert.deepEqual(h.prompts, []);
     assert.equal(h.notices.length, 1);
     assert.deepEqual(h.levels, ['info']);
-    assert.match(h.notices[0]!, /ofuscados/i);
+    assert.match(h.notices[0]!, /^Secrets obfuscated before sending to the model: 1 credential, 1 email\.$/);
     assert.ok(!JSON.stringify(h.notices).includes('@example.com'));
     assert.ok(!JSON.stringify(h.notices).includes(VALUE));
     assert.equal(h.ctx.sessionManager.getBranch().length, 0, 'native notices are not session or model messages');
@@ -88,11 +88,18 @@ test('default privacy masks 50 concurrent sends with one native info and no conv
     }
     assert.equal(h.notices.length, 1, 'repeated outbound hooks share the notice');
     await h.emit('agent_settled', {});
+    assert.equal(h.notices.length, 2, 'values masked after the first notice are reported once when the run settles');
+    assert.equal(h.notices[1], 'Secrets obfuscated before sending to the model: 1 credential, 51 emails.');
     await h.emit('input', { text: 'next@example.com', source: 'interactive' });
-    assert.equal(h.notices.length, 2, 'another send with sensitive data gets its own info');
+    assert.equal(h.notices.length, 3, 'another send with sensitive data gets its own info');
+    assert.equal(h.notices[2], 'Secrets obfuscated before sending to the model: 1 email.');
+    await h.emit('agent_settled', {});
+    assert.equal(h.notices.length, 3, 'nothing new since the notice: no second one');
+    await h.emit('input', { text: 'Mi correo es otra@example.com y la tarjeta 4111 1111 1111 1111', source: 'interactive' });
+    assert.equal(h.notices.at(-1), 'Secrets ofuscó antes de enviar al modelo: 1 correo, 1 tarjeta de pago.', 'the language the person typed');
     await h.emit('agent_settled', {});
     await h.emit('before_provider_request', { payload: { messages: [{ role: 'user', content: 'ordinary code' }] } });
-    assert.equal(h.notices.length, 2, 'cloning a clean payload is not obfuscation');
+    assert.equal(h.notices.length, 4, 'cloning a clean payload is not obfuscation');
   } finally { h.cleanup(); }
 });
 
@@ -366,7 +373,7 @@ test('headless and RPC requests obfuscate without a confirmation dialog', async 
     const result = await h.emit('input', { text: 'person@example.com', source: 'rpc' });
     assert.equal(result.text, 'p**********@****.com');
     assert.equal(h.prompts.length, 0);
-    assert.ok(h.notices.some(notice => notice.includes('ofuscados')));
+    assert.ok(h.notices.includes('Secrets obfuscated before sending to the model: 1 email.'), JSON.stringify(h.notices));
   } finally { h.cleanup(); }
 });
 

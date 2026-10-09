@@ -1,6 +1,6 @@
 {
   "name": "@prjct.app/pi-secrets",
-  "version": "0.2.7",
+  "version": "0.3.0",
   "description": "OS keychain credentials and local outbound privacy guardrails for Pi: confirm, obfuscate or cancel sensitive data before a model request.",
   "type": "module",
   "keywords": [
