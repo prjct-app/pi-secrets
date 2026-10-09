@@ -173,9 +173,10 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
   pi.registerTool({
     name: 'secret_list',
     label: 'Secrets',
+    // Guidance lives in the descriptions: promptSnippet and promptGuidelines would add it to the system prompt.
     description: 'List the secrets (API keys, tokens, passwords) the person stored for agents, by name only. '
-      + 'A bash command that mentions a name gets it as an environment variable: write "$NAME", never the value.',
-    promptSnippet: 'List stored credentials by name; use them as $NAME in bash',
+      + 'A bash command that mentions a name gets it as an environment variable: write "$NAME", never the value. '
+      + 'When a task needs a credential, check here first and call secret_request for any that is missing; never ask for one in chat.',
     parameters: Type.Object({}, { additionalProperties: false }),
     execute: async (_id, _input, _signal, _update, ctx) => {
       await refresh();
@@ -194,14 +195,10 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
   pi.registerTool({
     name: 'secret_request',
     label: 'Request a secret',
-    description: 'Ask the person for a credential (API key, token, password) through a masked prompt in their terminal. '
-      + 'The value goes to the OS keychain and you only ever receive its name; then use it as $NAME in bash. '
-      + 'If the secret is stored but not given to this project, this asks the person to allow it here.',
-    promptSnippet: 'Ask the person for a credential through a masked prompt; you get only its name',
-    promptGuidelines: [
-      'When a task needs an API key, token, password or other credential, check secret_list and call secret_request for any that is missing. Never ask for a credential in chat, and never ask the person to paste one.',
-      'Use a secret only as $NAME inside a bash command, for example curl -H "Authorization: Bearer $NAME". Never print, echo or log it, and never write it into a tracked file. Outputs show [secret:NAME] in place of the value.',
-    ],
+    description: 'Ask the person for a credential (API key, token, password) through a masked prompt in their terminal; never ask for one in chat '
+      + 'or ask the person to paste it. The value goes to the OS keychain and you only ever receive its name. Use it only as $NAME inside a bash '
+      + 'command, for example curl -H "Authorization: Bearer $NAME"; never print, echo or log it, and never write it into a tracked file. '
+      + 'Outputs show [secret:NAME] in place of the value. If the secret is stored but not given to this project, this asks the person to allow it here.',
     parameters: Type.Object({
       name: Type.String({ minLength: 1, maxLength: 64, description: 'Environment variable name, for example STRIPE_SECRET_KEY.' }),
       reason: Type.String({ minLength: 1, maxLength: 300, description: 'One sentence the person reads: what the credential is for.' }),

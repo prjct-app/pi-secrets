@@ -1,3 +1,7 @@
+## 0.2.7 (2026-10-09)
+
+- Credential guidance lives in the secret_list and secret_request descriptions. The tools no longer add snippets or guidelines to the system prompt of every request.
+
 ## 0.2.6 (2026-10-07)
 
 - Reuse unchanged protocol branches and a bounded cache of clean text across privacy hooks. Every miss is scanned; consent and vault revisions are checked independently.
