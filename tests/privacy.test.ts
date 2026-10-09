@@ -80,3 +80,26 @@ test('background SDK guard hides keychain values and fails if the keychain is un
     await assert.rejects(protectOutboundData(value, { root, keys: { ...keys, get: async () => { throw new Error('Locked'); } } }), /Locked/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('bounded clean-text caching never caches consent or skips changed text', async () => {
+  const { createSensitiveScanner } = await import('../src/privacy.ts');
+  const scan = createSensitiveScanner(40, 2);
+  for (const text of ['clean evidence', 'another fact', 'third fact', 'clean evidence', 'x'.repeat(100)]) assert.deepEqual(scan(text), []);
+  for (const text of ['person@example.com', 'clean evidence person@example.com', 'x'.repeat(100) + ' person@example.com']) assert.deepEqual(scan(text), findSensitive(text));
+  const guard = createPrivacyGuard(); const asked: string[] = [];
+  const context = { destination: 'first', interactive: true, choose: async () => { asked.push('asked'); return PRIVACY_CHOICES[1]; }, notify: () => {} };
+  await guard.inspect('person@example.com', context);
+  await guard.inspect('person@example.com', { ...context, destination: 'second' });
+  guard.reset(); await guard.inspect('person@example.com', context);
+  assert.equal(asked.length, 3);
+});
+
+test('a formerly clean value becomes protected after vault rotation', async t => {
+  const { mkdtemp, rm } = await import('node:fs/promises'); const { tmpdir } = await import('node:os'); const { join } = await import('node:path');
+  const { protectOutboundData } = await import('../src/privacy.ts'); const { createVault } = await import('../src/vault.ts'); const { memoryKeys } = await import('./keys.ts');
+  const root = await mkdtemp(join(tmpdir(), 'pi-clean-rotation-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const keys = memoryKeys(); const value = 'fixture-clean-then-credential';
+  assert.equal(await protectOutboundData(value, {root,keys}), value);
+  await createVault({root,keys}).put('NEW_CREDENTIAL', value, {scope:'all'});
+  assert.equal(await protectOutboundData(value, {root,keys}), '[secret:NEW_CREDENTIAL]');
+});

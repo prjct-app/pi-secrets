@@ -39,3 +39,30 @@ test('opaque protocol values cause no consent prompt while ordinary ID data rema
 test('card-like digit runs inside identifiers are never replaced, even beside a real card', () => {
   assert.equal(maskSensitiveData(`${id} card 4111111111111111`), `${id} card ************1111`);
 });
+
+test('unchanged branches keep identity; changed branches never mutate their source', async () => {
+  const { mapText } = await import('../src/protocol.ts');
+  const stable = Object.freeze({ role: 'user', content: Object.freeze([{ type: 'text', text: 'verified evidence' }]) });
+  const mutable = { type: 'text', text: 'original' };
+  const source = { input: [stable, mutable], opaque };
+  assert.equal(mapText(source, text => text), source);
+  const protectedValue = mapText(source, text => text === 'original' ? 'changed' : text);
+  assert.notEqual(protectedValue, source);
+  assert.equal(protectedValue.input[0], stable);
+  assert.equal(protectedValue.opaque, opaque);
+  assert.equal(mutable.text, 'original');
+  assert.equal((protectedValue.input[1] as typeof mutable).text, 'changed');
+  mutable.text = 'person@example.com';
+  assert.equal((maskSensitiveData(source).input[1] as typeof mutable).text, 'p**********@****.com', 'mutable input is inspected again');
+});
+
+test('protocol traversal preserves sparse arrays and own __proto__ fields', async () => {
+  const { mapText } = await import('../src/protocol.ts');
+  const sparse = new Array(3); sparse[2] = 'original';
+  const changed = mapText(sparse, text => text.toUpperCase());
+  assert.equal(0 in changed, false); assert.equal(changed[2], 'ORIGINAL');
+  const object = JSON.parse('{"__proto__":"original"}');
+  const clean = mapText(object, text => text.toUpperCase());
+  assert.equal(Object.getPrototypeOf(clean), Object.prototype);
+  assert.equal(Object.getOwnPropertyDescriptor(clean, '__proto__')?.value, 'ORIGINAL');
+});
