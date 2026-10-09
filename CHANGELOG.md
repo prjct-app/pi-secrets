@@ -1,3 +1,8 @@
+## 0.2.6 (2026-10-07)
+
+- Reuse unchanged protocol branches and a bounded cache of clean text across privacy hooks. Every miss is scanned; consent and vault revisions are checked independently.
+- Preserve every outbound boundary, cancellation, opaque protocol data and secret rotation. Avoid repeated replacement sorting and consent hashing per text field.
+
 ## 0.2.5 (2026-10-07)
 
 - Default to Always obfuscate when no privacy preference exists, including fresh projects and isolated agent homes. Ask remains an explicit TUI choice.

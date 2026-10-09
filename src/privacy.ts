@@ -42,6 +42,28 @@ export function findSensitive(text: string): readonly Finding[] {
     .sort((a, b) => b.value.length - a.value.length);
 }
 
+/** Cache only clean text, never consent or mutable message objects. Bounds are
+ * local work limits, not context limits: every cache miss is fully inspected. */
+export function createSensitiveScanner(maxCharacters = 4 * 1024 * 1024, maxEntries = 2048) {
+  const clean = new Map<string, true>();
+  const size = { characters: 0 };
+  return (text: string): readonly Finding[] => {
+    if (clean.has(text)) return [];
+    const found = findSensitive(text);
+    if (found.length || !text.length || text.length > maxCharacters || maxEntries < 1) return found;
+    while (clean.size && (clean.size >= maxEntries || size.characters + text.length > maxCharacters)) {
+      const oldest = clean.keys().next().value!;
+      clean.delete(oldest);
+      size.characters -= oldest.length;
+    }
+    clean.set(text, true);
+    size.characters += text.length;
+    return found;
+  };
+}
+
+const scanSensitive = createSensitiveScanner();
+
 const replaceFinding = (text: string, item: Finding): string => {
   if (item.kind !== 'payment card') return text.replaceAll(item.value, item.masked);
   const escaped = item.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -50,7 +72,7 @@ const replaceFinding = (text: string, item: Finding): string => {
 
 /** For background SDK consumers that cannot ask for consent. */
 export const maskSensitiveData = <T>(value: T): T => mapText(value, text =>
-  findSensitive(text).reduce((result, item) => replaceFinding(result, item), text));
+  scanSensitive(text).reduce((result, item) => replaceFinding(result, item), text));
 
 type VaultOptions = Parameters<typeof import('./vault.ts').createVault>[0];
 type Redactor = ReturnType<typeof import('./redact.ts').createRedactor>;
@@ -112,7 +134,7 @@ export function createPrivacyGuard(options: { onChange?: (snapshot: PrivacySnaps
       if (state !== cell.state || generation !== state.generation) return { value: maskSensitiveData(value), cancelled: true, changed: true };
       const key = (value: string): string => createHash('sha256').update(state.salt).update(ctx.destination).update('\0').update(value).digest('hex');
       const found = new Map<string, Finding>();
-      mapText(value, text => { for (const item of findSensitive(text)) found.set(item.value, item); return text; });
+      mapText(value, text => { for (const item of scanSensitive(text)) found.set(item.value, item); return text; });
       const pending = [...found.values()].filter(item => !state.decisions.has(key(item.value)));
       const automatic = state.automatic.has(key(''));
       const selected = pending.length && ctx.interactive && !automatic
@@ -135,12 +157,14 @@ export function createPrivacyGuard(options: { onChange?: (snapshot: PrivacySnaps
         ctx.notify(`Obfuscating sensitive data before sending to ${ctx.destination}; interactive consent is unavailable. Further background notices are suppressed for this session.`);
       }
       const changes = { value: false };
-      const sanitized = mapText(value, text => [...found.values()].sort((a, b) => b.value.length - a.value.length).reduce((result, item) => {
-        if (!cancelled && !state.automatic.has(key('')) && state.decisions.get(key(item.value)) === 'send') return result;
+      const replacements = [...found.values()]
+        .filter(item => cancelled || state.automatic.has(key('')) || state.decisions.get(key(item.value)) !== 'send')
+        .sort((a, b) => b.value.length - a.value.length);
+      const sanitized = replacements.length ? mapText(value, text => replacements.reduce((result, item) => {
         const next = replaceFinding(result, item);
         if (next !== result) changes.value = true;
         return next;
-      }, text));
+      }, text)) : value;
       return { value: sanitized, cancelled, changed: changes.value };
   };
   return {
