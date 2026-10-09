@@ -9,7 +9,8 @@ import { NAME_RULE, mentions, tail, toName, validName, valueProblem } from './na
 import { secretPanelSpec, scopeText, type SecretIntent } from './panel.ts';
 import { createRedactor, createStreamRedactor, marker, type Known, type Redactor } from './redact.ts';
 import { createVault, inScope, projectOf, type Entry, type KeyStore, type Scope } from './vault.ts';
-import { mapText, maskSensitiveData, resetOutboundProtection } from './privacy.ts';
+import { mapText, maskSensitiveData, resetOutboundProtection, type Finding } from './privacy.ts';
+import { categoryOf, createTally, detectLanguage, obfuscationNotice, type Language, type Masked } from './notice.ts';
 import { sessionPrivacy } from './consent-session.ts';
 import { privacySettings, PRIVACY_MODES, type PrivacyMode } from './privacy-settings.ts';
 
@@ -61,19 +62,36 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
   const privacy = sessionPrivacy(pi);
   const settings = privacySettings(options.root);
   const availability = { blocked: false };
-  const notice = { sessionId: '', shown: false };
-  const resetNotice = (): void => { notice.shown = false; };
+  /**
+   * What was hidden in this send, counted by category: one native notice when
+   * the first value is masked, and one more when the run settles only if new
+   * values appeared after it. The text follows the language the person last
+   * typed; it never reaches the model or the session.
+   */
+  const notice = { sessionId: '', told: 0, language: 'en' as Language, ctx: undefined as ExtensionContext | undefined };
+  const tally = createTally();
+  const resetNotice = (): void => { tally.clear(); notice.told = 0; };
+  const tell = (ctx: ExtensionContext): void => {
+    notice.told = tally.size();
+    ctx.ui.notify(obfuscationNotice(tally.counts(), notice.language), 'info');
+  };
   pi.on('session_start', resetNotice);
   pi.on('session_tree', resetNotice);
   // SDK retries and tool continuations belong to the same run.
-  pi.on('agent_settled', resetNotice);
-  const notifyProtection = (ctx: ExtensionContext): void => {
+  pi.on('agent_settled', () => {
+    if (notice.ctx && notice.told && tally.size() > notice.told) tell(notice.ctx);
+    resetNotice();
+  });
+  const record = (ctx: ExtensionContext, items: readonly Masked[]): void => {
+    if (!items.length) return;
     const sessionId = ctx.sessionManager.getSessionId();
     if (notice.sessionId !== sessionId) { notice.sessionId = sessionId; resetNotice(); }
-    if (notice.shown) return;
-    notice.shown = true;
-    ctx.ui.notify('Secrets · Datos sensibles ofuscados antes de enviarlos al modelo.', 'info');
+    notice.ctx = ctx;
+    tally.add(items);
+    if (!notice.told) tell(ctx);
   };
+  const stored = (names: readonly string[]): Masked[] => names.map(name => ({ category: 'stored', value: name }));
+  const findings = (items: readonly Finding[]): Masked[] => items.map(item => ({ category: categoryOf(item.kind), value: item.value }));
   const protect = async <T>(value: T, ctx: ExtensionContext, interactive = ctx.hasUI && ctx.mode === 'tui') => {
     if (availability.blocked) {
       ctx.ui.notify('Sending blocked: unlock the keychain to restore secret protection.', 'error');
@@ -83,24 +101,27 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
     try {
       const automatic = settings.get() === 'always';
       const changes = { value: false };
+      const masked: Masked[] = [];
       const redacted = mapText(value, text => {
         const hidden = store.get().redactor.text(text);
-        const next = automatic ? maskSensitiveData(hidden) : hidden;
+        if (hidden !== text) masked.push(...stored(store.get().redactor.found(text)));
+        const next = automatic ? maskSensitiveData(hidden, item => masked.push(...findings([item]))) : hidden;
         if (next !== text) changes.value = true;
         return next;
       });
       if (automatic) {
-        if (changes.value) notifyProtection(ctx);
+        record(ctx, masked);
         return { value: redacted, cancelled: false, changed: changes.value };
       }
       const result = await privacy(ctx).inspect(redacted, {
         destination: ctx.model ? `${ctx.model.provider}/${ctx.model.id} (${origin})` : 'selected model',
         interactive,
         choose: (preview, choices) => ctx.ui.select(preview, [...choices], { signal: ctx.signal }),
-        notify: () => notifyProtection(ctx),
+        // Counts come from the result below; the background notice is the counted one.
+        notify: () => undefined,
       });
-      if (!result.cancelled && (result.changed || changes.value)) notifyProtection(ctx);
-      return { ...result, changed: result.changed || changes.value };
+      if (!result.cancelled) record(ctx, [...masked, ...findings(result.masked)]);
+      return { value: result.value, cancelled: result.cancelled, changed: result.changed || changes.value };
     } catch {
       ctx.ui.notify('Sending cancelled: privacy confirmation could not be completed.', 'error');
       return { value: maskSensitiveData(store.get().redactor.deep(value)), cancelled: true, changed: true };
@@ -173,9 +194,10 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
   pi.registerTool({
     name: 'secret_list',
     label: 'Secrets',
+    // Guidance lives in the descriptions: promptSnippet and promptGuidelines would add it to the system prompt.
     description: 'List the secrets (API keys, tokens, passwords) the person stored for agents, by name only. '
-      + 'A bash command that mentions a name gets it as an environment variable: write "$NAME", never the value.',
-    promptSnippet: 'List stored credentials by name; use them as $NAME in bash',
+      + 'A bash command that mentions a name gets it as an environment variable: write "$NAME", never the value. '
+      + 'When a task needs a credential, check here first and call secret_request for any that is missing; never ask for one in chat.',
     parameters: Type.Object({}, { additionalProperties: false }),
     execute: async (_id, _input, _signal, _update, ctx) => {
       await refresh();
@@ -194,14 +216,10 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
   pi.registerTool({
     name: 'secret_request',
     label: 'Request a secret',
-    description: 'Ask the person for a credential (API key, token, password) through a masked prompt in their terminal. '
-      + 'The value goes to the OS keychain and you only ever receive its name; then use it as $NAME in bash. '
-      + 'If the secret is stored but not given to this project, this asks the person to allow it here.',
-    promptSnippet: 'Ask the person for a credential through a masked prompt; you get only its name',
-    promptGuidelines: [
-      'When a task needs an API key, token, password or other credential, check secret_list and call secret_request for any that is missing. Never ask for a credential in chat, and never ask the person to paste one.',
-      'Use a secret only as $NAME inside a bash command, for example curl -H "Authorization: Bearer $NAME". Never print, echo or log it, and never write it into a tracked file. Outputs show [secret:NAME] in place of the value.',
-    ],
+    description: 'Ask the person for a credential (API key, token, password) through a masked prompt in their terminal; never ask for one in chat '
+      + 'or ask the person to paste it. The value goes to the OS keychain and you only ever receive its name. Use it only as $NAME inside a bash '
+      + 'command, for example curl -H "Authorization: Bearer $NAME"; never print, echo or log it, and never write it into a tracked file. '
+      + 'Outputs show [secret:NAME] in place of the value. If the secret is stored but not given to this project, this asks the person to allow it here.',
     parameters: Type.Object({
       name: Type.String({ minLength: 1, maxLength: 64, description: 'Environment variable name, for example STRIPE_SECRET_KEY.' }),
       reason: Type.String({ minLength: 1, maxLength: 300, description: 'One sentence the person reads: what the credential is for.' }),
@@ -281,7 +299,7 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
       ? [{ type: 'text' as const, text: `\n${pending.withheld.join(', ')} ${pending.withheld.length === 1 ? 'was' : 'were'} not set: not stored or not given to this project. Call secret_request; do not ask for the value in chat.` }]
       : [];
     const changed = JSON.stringify(content) !== JSON.stringify(event.content) || JSON.stringify(details) !== JSON.stringify(event.details);
-    if (changed) notifyProtection(ctx);
+    if (changed) record(ctx, stored(redactor.found(JSON.stringify([event.content, event.details]))));
     if (!changed && !note.length) return undefined;
     return { content: [...content, ...note], details };
   });
@@ -334,6 +352,7 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
 
   pi.on('input', async (event, ctx) => {
     await refresh();
+    if (event.source === 'interactive' && event.text.trim()) notice.language = detectLanguage(event.text);
     const redactor = store.get().redactor;
     const hidden = redactor.found(event.text);
     const text = redactor.text(event.text);
@@ -346,7 +365,7 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
       return result.value !== event.text ? { action: 'transform' as const, text: result.value, images: event.images } : { action: 'continue' as const };
     };
     if (settings.get() === 'always') return finish(event.text);
-    if (hidden.length) notifyProtection(ctx);
+    record(ctx, stored(hidden));
     const seen = event.source === 'interactive' && ctx.hasUI ? sight(text) : undefined;
     if (!seen) return finish(text);
     const keep = await ctx.ui.confirm(`That looks like a ${seen.label}`, `Store it in the OS keychain instead of sending it? The agent will get only its name.`);

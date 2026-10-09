@@ -82,7 +82,7 @@ export default function(pi) {
           if (automatic) {
             assert.equal(notices.length, 1, 'one native info for a send, across every SDK hook');
             assert.equal(notices[0]!.type, 'info');
-            assert.match(notices[0]!.message, /ofuscados/i);
+            assert.match(notices[0]!.message, /^Secrets obfuscated before sending to the model: (?:1 email|1 stored secret|1 credential)/);
             assert.ok(!wire[0]!.includes(notices[0]!.message), 'native info never reaches the model');
             assert.ok(!JSON.stringify(session.sessionManager.getBranch()).includes(notices[0]!.message), 'native info never becomes a session message');
           }
@@ -97,7 +97,10 @@ export default function(pi) {
           if ('default' in scenario) {
             await session.prompt('next@example.com', { source: scenario.mode === 'tui' ? 'interactive' : 'rpc' });
             assert.equal(prompts.length, 0);
-            assert.equal(notices.length, 3, 'SDK settlement resets the info without needing a reload');
+            // A context fixture keeps a raw email in history: masked again in this send, it is reported when the run settles.
+            const settled = scenario.prompt === 'context fixture';
+            assert.equal(notices.length, settled ? 4 : 3, 'SDK settlement resets the info without needing a reload');
+            if (settled) assert.equal(notices.at(-1)!.message, 'Secrets obfuscated before sending to the model: 2 emails.');
             assert.ok(!wire[2]!.includes('next@example.com'));
           }
           if (scenario.choice === PRIVACY_CHOICES[3]) {

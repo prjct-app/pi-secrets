@@ -1,3 +1,13 @@
+## 0.3.0 (2026-10-09)
+
+- The obfuscation notice counts what was hidden by category: stored secrets, credentials, emails, payment cards and phone numbers, in the language the person last typed (Spanish or English, English by default). Only hashes of the values are kept. Values masked later in the same run are reported once when it settles.
+- Credential guidance lives in the secret_list and secret_request descriptions. The tools no longer add snippets or guidelines to the system prompt of every request.
+
+## 0.2.6 (2026-10-07)
+
+- Reuse unchanged protocol branches and a bounded cache of clean text across privacy hooks. Every miss is scanned; consent and vault revisions are checked independently.
+- Preserve every outbound boundary, cancellation, opaque protocol data and secret rotation. Avoid repeated replacement sorting and consent hashing per text field.
+
 ## 0.2.5 (2026-10-07)
 
 - Default to Always obfuscate when no privacy preference exists, including fresh projects and isolated agent homes. Ask remains an explicit TUI choice.
