@@ -199,6 +199,11 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
       + 'A bash command that mentions a name gets it as an environment variable: write "$NAME", never the value. '
       + 'When a task needs a credential, check here first and call secret_request for any that is missing; never ask for one in chat.',
     parameters: Type.Object({}, { additionalProperties: false }),
+    // Codemode scripts receive names only, like the model.
+    outputSchema: Type.Object({
+      available: Type.Array(Type.Object({ name: Type.String(), description: Type.Optional(Type.String()) })),
+      elsewhere: Type.Array(Type.String()),
+    }),
     execute: async (_id, _input, _signal, _update, ctx) => {
       await refresh();
       const entries = vault.list();
@@ -209,13 +214,16 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
         here.length ? `Available here (use as $NAME in bash):\n${here.map(line).join('\n')}` : 'No secret is available in this project.',
         ...(elsewhere.length ? [`Stored but not given to this project (secret_request asks the person to allow one):\n${elsewhere.map(entry => entry.name).join(', ')}`] : []),
       ].join('\n\n');
-      return { content: [{ type: 'text', text }], details: {} };
+      const available = here.map((entry): Record<string, string> => (entry.description ? { name: entry.name, description: entry.description } : { name: entry.name }));
+      return { content: [{ type: 'text', text }], structuredContent: { available, elsewhere: elsewhere.map(entry => entry.name) }, details: {} };
     },
   });
 
   pi.registerTool({
     name: 'secret_request',
     label: 'Request a secret',
+    // It waits for the person: the model asks, codemode scripts never do.
+    exposure: 'model-only',
     description: 'Ask the person for a credential (API key, token, password) through a masked prompt in their terminal; never ask for one in chat '
       + 'or ask the person to paste it. The value goes to the OS keychain and you only ever receive its name. Use it only as $NAME inside a bash '
       + 'command, for example curl -H "Authorization: Bearer $NAME"; never print, echo or log it, and never write it into a tracked file. '
@@ -295,13 +303,16 @@ export function installSecrets(pi: ExtensionAPI, options: InstallSecretsOptions 
     }
     const content = redactor.deep(event.content);
     const details = redactor.deep(event.details);
+    // Codemode scripts receive structuredContent, not content; bash keeps up to 1 MiB there.
+    // Pi drops it when a handler replaces content alone, so it is always returned redacted.
+    const structuredContent = event.structuredContent === undefined ? undefined : redactor.deep(event.structuredContent);
     const note = pending?.withheld.length
       ? [{ type: 'text' as const, text: `\n${pending.withheld.join(', ')} ${pending.withheld.length === 1 ? 'was' : 'were'} not set: not stored or not given to this project. Call secret_request; do not ask for the value in chat.` }]
       : [];
-    const changed = JSON.stringify(content) !== JSON.stringify(event.content) || JSON.stringify(details) !== JSON.stringify(event.details);
-    if (changed) record(ctx, stored(redactor.found(JSON.stringify([event.content, event.details]))));
+    const changed = JSON.stringify([content, details, structuredContent]) !== JSON.stringify([event.content, event.details, event.structuredContent]);
+    if (changed) record(ctx, stored(redactor.found(JSON.stringify([event.content, event.details, event.structuredContent]))));
     if (!changed && !note.length) return undefined;
-    return { content: [...content, ...note], details };
+    return { content: [...content, ...note], details, ...(structuredContent === undefined ? {} : { structuredContent }) };
   });
 
   /** Last line: whatever reached the history some other way is hidden before each model call. */

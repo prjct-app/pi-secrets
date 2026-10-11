@@ -141,6 +141,7 @@ test('secret_request stores the typed value and answers with the name only', asy
     const listed = await h.tool('secret_list', {});
     assert.match(text(listed as never), /Available here[\s\S]*STRIPE_KEY/);
     assert.ok(!JSON.stringify(listed).includes(VALUE.slice(-6)));
+    assert.deepEqual((listed as { structuredContent?: unknown }).structuredContent, { available: [{ name: 'STRIPE_KEY' }], elsewhere: [] });
     const again = await h.tool('secret_request', { name: 'STRIPE_KEY', reason: 'again' });
     assert.match(text(again as never), /is available/);
   } finally { h.cleanup(); }
@@ -230,6 +231,24 @@ test('the value is hidden from every other tool result and from the model contex
     assert.equal(context.messages[0].content[0].text, 'k [secret:STRIPE_KEY]');
     const untouched = await h.emit('tool_result', { type: 'tool_result', toolName: 'read', toolCallId: 'r2', input: {}, content: [{ type: 'text', text: 'clean' }], details: {}, isError: false });
     assert.equal(untouched, undefined);
+  } finally { h.cleanup(); }
+});
+
+test('codemode scripts receive structuredContent with the value hidden, even when content is clean', async () => {
+  const h = harness({ value: VALUE, select: 'Every project' });
+  try {
+    await h.tool('secret_request', { name: 'STRIPE_KEY', reason: 'x' });
+    // bash keeps up to 1 MiB in structuredContent; the model-facing content may be truncated before the value.
+    const nested = await h.emit('tool_result', {
+      type: 'tool_result', toolName: 'bash', toolCallId: 'cm/1', parentToolCallId: 'cm', input: { command: 'cat log' },
+      content: [{ type: 'text', text: '[truncated]' }], structuredContent: { output: `line\nSTRIPE=${VALUE}\n`, exit_code: 0 }, details: undefined, isError: false,
+    });
+    assert.deepEqual(nested.structuredContent, { output: 'line\nSTRIPE=[secret:STRIPE_KEY]\n', exit_code: 0 });
+    assert.equal(text(nested), '[truncated]');
+    const clean = await h.emit('tool_result', {
+      type: 'tool_result', toolName: 'bash', toolCallId: 'cm/2', input: {}, content: [{ type: 'text', text: 'ok' }], structuredContent: { output: 'ok', exit_code: 0 }, details: undefined, isError: false,
+    });
+    assert.equal(clean, undefined);
   } finally { h.cleanup(); }
 });
 

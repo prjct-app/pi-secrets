@@ -1,3 +1,8 @@
+## 0.3.1 (2026-10-11)
+
+- Redact `structuredContent` in tool results. Codemode scripts receive it instead of `content`, and bash keeps up to 1 MiB there, past what the model sees, so a stored value could reach a script unredacted.
+- `secret_list` returns `{ available, elsewhere }` (names only) to codemode scripts. `secret_request` is `model-only`: it waits for the person, so scripts cannot call it.
+
 ## 0.3.0 (2026-10-09)
 
 - The obfuscation notice counts what was hidden by category: stored secrets, credentials, emails, payment cards and phone numbers, in the language the person last typed (Spanish or English, English by default). Only hashes of the values are kept. Values masked later in the same run are reported once when it settles.
