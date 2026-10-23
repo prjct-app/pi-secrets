@@ -8,7 +8,7 @@ A key is typed once into a masked prompt and goes straight to the OS keychain. A
 
 ## Install
 
-Requires Pi **1.0.3** and Node.js **22.19+**.
+Requires Pi **1.0.3** and Node.js **22.23.4+**.
 
 ```sh
 pi install npm:@prjct.app/pi-secrets
